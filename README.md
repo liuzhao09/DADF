@@ -231,10 +231,6 @@ DADF is evaluated on the following metrics:
 |--------|-------------|
 | **MAE** (seconds) | Mean Absolute Error in watch-time prediction |
 | **XAUC** | Ranking quality metric for continuous labels (AUC generalization) |
-| **wXAUC** | Weighted XAUC emphasizing high watch-time samples |
-| **KL** | KL divergence between predicted and observed watch-time distributions |
-
-DADF specifically improves the distributional alignment (KL divergence) while maintaining or improving MAE and ranking metrics.
 
 ## Main Results
 
