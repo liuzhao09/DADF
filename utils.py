@@ -151,11 +151,6 @@ def eval_xauc(labels, pres):
     return xauc
 
 def eval_wxauc(labels, scores):
-    """Weighted XAUC: w(i,j) = max(label_i, label_j) for pairs where label_i > label_j.
-    Emphasizes high-value (long watch-time) sample ranking. O(n log n) Fenwick tree.
-    Range [0,1]; higher=better. Use alongside XAUC to detect high-value ranking degradation.
-    Validated: EGMN debias correction HURTS wXAUC (-0.020) while XAUC looks neutral (-0.001).
-    """
     labels = np.asarray(labels, dtype=np.float64).ravel()
     scores = np.asarray(scores, dtype=np.float64).ravel()
     n = len(labels)
@@ -296,10 +291,8 @@ def eval_by_duration_bucket(labels, scores, durations, play_duration_max=None, d
 
 
 def eval_kl(samples_p, samples_q, bins=100, epsilon=1e-10):
-    # H11: use union range of both distributions to avoid truncating samples_q
     samples_p = np.asarray(samples_p, dtype=float)
     samples_q = np.asarray(samples_q, dtype=float)
-    # Filter NaN/Inf (e.g. EGMN can produce NaN when debias proxy is near 0)
     valid = np.isfinite(samples_p) & np.isfinite(samples_q)
     if valid.sum() < 2:
         return float('nan')
@@ -307,20 +300,13 @@ def eval_kl(samples_p, samples_q, bins=100, epsilon=1e-10):
     samples_q = samples_q[valid]
     all_data = np.concatenate([samples_p, samples_q])
     range_ = (all_data.min(), all_data.max())
-    # 计算直方图分箱概率
     hist_p, bin_edges = np.histogram(samples_p, bins=bins, density=True, range=range_)
     hist_q, _ = np.histogram(samples_q, bins=bin_edges, density=True)
-    
-    # 计算每个分箱的宽度（用于归一化）
     bin_width = np.diff(bin_edges)
-    hist_p = hist_p * bin_width  # 转为概率质量
+    hist_p = hist_p * bin_width
     hist_q = hist_q * bin_width
-    
-    # 防止零概率
     hist_p = np.clip(hist_p, epsilon, None)
     hist_q = np.clip(hist_q, epsilon, None)
-    
-    # 计算KL散度
     kl = np.sum(hist_p * np.log(hist_p / hist_q))
-    return kl 
+    return kl
  

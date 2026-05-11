@@ -245,8 +245,8 @@ echo "============================================================" | tee -a "$S
 # ---------------------------------------------------------------------------
 echo "" | tee -a "$SUMMARY"
 echo " Results:" | tee -a "$SUMMARY"
-printf "  %-25s %-10s %-10s %-10s\n" "Run" "MAE(s)" "XAUC" "wXAUC" | tee -a "$SUMMARY"
-printf "  %-25s %-10s %-10s %-10s\n" "-------------------------" "------" "------" "------" | tee -a "$SUMMARY"
+printf "  %-25s %-10s %-10s\n" "Run" "MAE(s)" "XAUC" | tee -a "$SUMMARY"
+printf "  %-25s %-10s %-10s\n" "-------------------------" "------" "------" | tee -a "$SUMMARY"
 
 for log_file in "${LOG_DIR}"/*.log; do
     [ -f "$log_file" ] || continue
@@ -254,11 +254,10 @@ for log_file in "${LOG_DIR}"/*.log; do
     [[ "$tag" == "_summary" ]] && continue
     final_line=$(grep -E "^test \| MAE:" "$log_file" 2>/dev/null | tail -1)
     if [[ -z "$final_line" ]]; then
-        printf "  %-25s %-10s %-10s %-10s\n" "$tag" "N/A" "N/A" "N/A" | tee -a "$SUMMARY"
+        printf "  %-25s %-10s %-10s\n" "$tag" "N/A" "N/A" | tee -a "$SUMMARY"
     else
-        mae=$(echo "$final_line"   | sed -E 's/.*MAE: ([0-9.]+) .*/\1/')
-        xauc=$(echo "$final_line"  | sed -E 's/.*XAUC: ([0-9.]+) .*wXAUC.*/\1/')
-        wxauc=$(echo "$final_line" | sed -E 's/.*wXAUC: ([0-9.]+) .*/\1/')
-        printf "  %-25s %-10s %-10s %-10s\n" "$tag" "$mae" "$xauc" "$wxauc" | tee -a "$SUMMARY"
+        mae=$(echo "$final_line"  | sed -E 's/.*MAE: ([0-9.]+) .*/\1/')
+        xauc=$(echo "$final_line" | sed -E 's/.*XAUC: ([0-9.]+) .*/\1/')
+        printf "  %-25s %-10s %-10s\n" "$tag" "$mae" "$xauc" | tee -a "$SUMMARY"
     fi
 done

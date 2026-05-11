@@ -42,7 +42,7 @@ from model.v2_debias import (
     duration_to_onehot,
 )
 from model.framework_utils import mae_rescale_to_second, get_loaders, get_vocab_size
-from utils import eval_mae, eval_xauc, eval_wxauc, eval_kl, eval_tre, eval_mre, eval_nrmse, eval_nmae, eval_by_duration_bucket
+from utils import eval_mae, eval_xauc, eval_tre, eval_mre, eval_nrmse, eval_nmae, eval_by_duration_bucket
 from logger import setup_logger
 
 _DEFAULT_DATASET  = os.path.join(_ROOT, 'dataset')
@@ -99,7 +99,7 @@ def get_args():
                         help='D2Q 分位数最大值（对应 run_d2q.py --quantile_max）')
     parser.add_argument('--label_debias_weight', type=float, default=0.0,
                         help='debias loss 中高label样本上采样权重系数，w=1+coeff*(play_time/batch_max)；'
-                             '0=均匀；ldw=3.0在KuaiRec+EGMN上将ΔwXAUC从-0.020翻转为+0.022（20轮实验验证）')
+                        help='debias loss 中高label样本上采样权重系数，w=1+coeff*(play_time/batch_max)；0=均匀')
     parser.add_argument('--save_predictions', type=str, default=None,
                         help='保存预测结果到 .npz 文件（用于详细分析）')
     parser.add_argument('--seed',         type=int,   default=42)
@@ -673,18 +673,16 @@ def test_base(args, adapter, dataloaders, bucket_json_path=None, split='test'):
     durations = np.array(durations)
     mae    = mae_rescale_to_second(args.dataset_name, eval_mae(labels, scores), getattr(dataloaders, 'play_duration_max', None))
     xauc   = eval_xauc(labels, scores)
-    wxauc  = eval_wxauc(labels, scores)
-    kl     = eval_kl(labels, scores)
     tre    = eval_tre(labels, scores)
     mre    = eval_mre(labels, scores)
     nrmse  = eval_nrmse(labels, scores)
     nmae   = eval_nmae(labels, scores)
-    print('[Base only] MAE: {:.7f} | XAUC: {:.7f} | wXAUC: {:.7f} | KL: {:.7f} | TRE: {:.7f} | MRE: {:.7f} | NRMSE: {:.7f} | NMAE: {:.7f}'.format(mae, xauc, wxauc, kl, tre, mre, nrmse, nmae))
+    print('[Base only] MAE: {:.7f} | XAUC: {:.7f} | TRE: {:.7f} | MRE: {:.7f} | NRMSE: {:.7f} | NMAE: {:.7f}'.format(mae, xauc, tre, mre, nrmse, nmae))
     if bucket_json_path is not None:
         eval_by_duration_bucket(labels, scores, durations,
                                 getattr(dataloaders, 'play_duration_max', None),
                                 args.dataset_name, save_path=bucket_json_path)
-    return mae, xauc, kl
+    return mae, xauc
 
 
 def test(args, adapter, debias_net, dataloaders, thresholds, bucket_json_path=None, split='test'):
@@ -752,18 +750,16 @@ def test(args, adapter, debias_net, dataloaders, thresholds, bucket_json_path=No
     durations = np.array(durations)
     mae    = mae_rescale_to_second(args.dataset_name, eval_mae(labels, scores), getattr(dataloaders, 'play_duration_max', None))
     xauc   = eval_xauc(labels, scores)
-    wxauc  = eval_wxauc(labels, scores)
-    kl     = eval_kl(labels, scores)
     tre    = eval_tre(labels, scores)
     mre    = eval_mre(labels, scores)
     nrmse  = eval_nrmse(labels, scores)
     nmae   = eval_nmae(labels, scores)
-    print('{} | MAE: {:.7f} | XAUC: {:.7f} | wXAUC: {:.7f} | KL: {:.7f} | TRE: {:.7f} | MRE: {:.7f} | NRMSE: {:.7f} | NMAE: {:.7f}'.format(split, mae, xauc, wxauc, kl, tre, mre, nrmse, nmae))
+    print('{} | MAE: {:.7f} | XAUC: {:.7f} | TRE: {:.7f} | MRE: {:.7f} | NRMSE: {:.7f} | NMAE: {:.7f}'.format(split, mae, xauc, tre, mre, nrmse, nmae))
     if bucket_json_path is not None:
         eval_by_duration_bucket(labels, scores, durations,
                                 getattr(dataloaders, 'play_duration_max', None),
                                 args.dataset_name, save_path=bucket_json_path)
-    return mae, xauc, kl
+    return mae, xauc
 
 
 # ────────────────────────────────────────────────────────────
@@ -961,7 +957,6 @@ def train_joint(args, adapter, debias_net, dataloader_train, thresholds, dataloa
                     weight_tight_balanced = weight_tight_balanced * ua_mult
 
                 # label-debias 高价值样本上采样：w = 1 + coeff * (play_time / batch_max)
-                # 30轮实验: ldw=3.0 → ΔwXAUC从-0.020翻转为+0.022，XAUC不变
                 _ldw = getattr(args, 'label_debias_weight', 0.0)
                 if _ldw > 0.0:
                     with torch.no_grad():
@@ -1112,7 +1107,7 @@ def train_joint(args, adapter, debias_net, dataloader_train, thresholds, dataloa
 
         # 联合阶段：每 epoch 评估 + early stopping
         if not is_warmup:
-            _, xauc, _ = test(args, adapter, debias_net, dataloaders, thresholds, split='val')
+            _, xauc = test(args, adapter, debias_net, dataloaders, thresholds, split='val')
             if xauc > best_xauc:
                 best_xauc  = xauc
                 no_improve = 0
@@ -1187,12 +1182,12 @@ if __name__ == '__main__':
             and args.epoch == 30 and args.patience == 6):
         args.epoch = 12
         args.patience = 8
-        print('KuaiRec+EGMN: epoch auto-set to 12, patience to 8 (20-round wXAUC experiment: ep=12 is sweet spot; ep=15 overfits with ldw=3.0)')
+        print('KuaiRec+EGMN: epoch auto-set to 12, patience to 8')
     if (args.dataset_name == 'kuairec' and args.base_model == 'egmn'
             and getattr(args, 'label_debias_weight', 0.0) == 0.0
             and not getattr(args, 'no_auto_debias', False)):
         args.label_debias_weight = 3.0
-        print('KuaiRec+EGMN: label_debias_weight auto-set to 3.0 (20-round experiment: ΔwXAUC +0.022 avg across 3 seeds, XAUC maintained)')
+        print('KuaiRec+EGMN: label_debias_weight auto-set to 3.0')
     # --no_auto_debias flag：禁用所有 EGMN/D2Q 的 debias 自动配置（消融实验用）
     _no_auto = getattr(args, 'no_auto_debias', False)
     # KuaiRec+EGMN user_factor_train_only：user_mean_factor 会放大跨用户参与度差异，hurt XAUC
