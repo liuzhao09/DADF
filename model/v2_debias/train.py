@@ -42,7 +42,7 @@ from model.v2_debias import (
     duration_to_onehot,
 )
 from model.framework_utils import mae_rescale_to_second, get_loaders, get_vocab_size
-from utils import eval_mae, eval_xauc, eval_tre, eval_mre, eval_nrmse, eval_nmae, eval_by_duration_bucket
+from utils import eval_mae, eval_xauc, eval_by_duration_bucket
 from logger import setup_logger
 
 _DEFAULT_DATASET  = os.path.join(_ROOT, 'dataset')
@@ -98,7 +98,6 @@ def get_args():
     parser.add_argument('--quantile_max', type=float, default=100.0,
                         help='D2Q 分位数最大值（对应 run_d2q.py --quantile_max）')
     parser.add_argument('--label_debias_weight', type=float, default=0.0,
-                        help='debias loss 中高label样本上采样权重系数，w=1+coeff*(play_time/batch_max)；'
                         help='debias loss 中高label样本上采样权重系数，w=1+coeff*(play_time/batch_max)；0=均匀')
     parser.add_argument('--save_predictions', type=str, default=None,
                         help='保存预测结果到 .npz 文件（用于详细分析）')
@@ -673,11 +672,7 @@ def test_base(args, adapter, dataloaders, bucket_json_path=None, split='test'):
     durations = np.array(durations)
     mae    = mae_rescale_to_second(args.dataset_name, eval_mae(labels, scores), getattr(dataloaders, 'play_duration_max', None))
     xauc   = eval_xauc(labels, scores)
-    tre    = eval_tre(labels, scores)
-    mre    = eval_mre(labels, scores)
-    nrmse  = eval_nrmse(labels, scores)
-    nmae   = eval_nmae(labels, scores)
-    print('[Base only] MAE: {:.7f} | XAUC: {:.7f} | TRE: {:.7f} | MRE: {:.7f} | NRMSE: {:.7f} | NMAE: {:.7f}'.format(mae, xauc, tre, mre, nrmse, nmae))
+    print('[Base only] MAE: {:.4f} | XAUC: {:.4f}'.format(mae, xauc))
     if bucket_json_path is not None:
         eval_by_duration_bucket(labels, scores, durations,
                                 getattr(dataloaders, 'play_duration_max', None),
@@ -750,11 +745,7 @@ def test(args, adapter, debias_net, dataloaders, thresholds, bucket_json_path=No
     durations = np.array(durations)
     mae    = mae_rescale_to_second(args.dataset_name, eval_mae(labels, scores), getattr(dataloaders, 'play_duration_max', None))
     xauc   = eval_xauc(labels, scores)
-    tre    = eval_tre(labels, scores)
-    mre    = eval_mre(labels, scores)
-    nrmse  = eval_nrmse(labels, scores)
-    nmae   = eval_nmae(labels, scores)
-    print('{} | MAE: {:.7f} | XAUC: {:.7f} | TRE: {:.7f} | MRE: {:.7f} | NRMSE: {:.7f} | NMAE: {:.7f}'.format(split, mae, xauc, tre, mre, nrmse, nmae))
+    print('{} | MAE: {:.4f} | XAUC: {:.4f}'.format(split, mae, xauc))
     if bucket_json_path is not None:
         eval_by_duration_bucket(labels, scores, durations,
                                 getattr(dataloaders, 'play_duration_max', None),
