@@ -1,10 +1,16 @@
 # DADF：面向观看时长回归的分布感知纠偏框架
 
-[![RecSys 2026](https://img.shields.io/badge/RecSys-2026-blue)](https://recsys.acm.org/recsys26/)
+[![论文稿件](https://img.shields.io/badge/status-manuscript-blue)](#代码范围与复现说明)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-1.12+-orange.svg)](https://pytorch.org/)
 
-**DADF: A Distribution-Aware Debiasing Framework for Watch-Time Regression in Recommender Systems**（RecSys 2026）官方代码实现。
+**DADF: A Distribution-Aware Debiasing Framework for Watch-Time Regression in Recommender Systems** 的公开参考实现。
+
+## 代码范围与复现说明
+
+本仓库提供与论文公开数据集实验对应的 DADF 结构参考实现，**不是完整的线上生产代码**。线上专有特征流程、第一阶段多任务塔、服务基础设施和系统优化均未开源。公开代码使用公共数据集可获得的特征与辅助标签重建核心结构，主要用于理解和评估论文方法。
+
+未显式传入消融参数时，公开实现与论文方法保持一致：纠偏训练阶段冻结第一阶段预测器；时长分组采用 hard routing；Box-Cox 参数是组级参数，不进行 per-sample 自适应；不包含额外的 user-level 或 video-level correction stage。
 
 ## 背景与动机
 
@@ -20,18 +26,16 @@ y_hat = y_hat_base × b_hat
 
 ## 核心组件
 
-1. **Box-Cox 变换** — 将纠偏目标变换到近似高斯空间，使回归更稳定，并支持方差感知的正态化约束。
+1. **动态分布感知变换** — 对乘性纠偏目标使用分组 Box-Cox 变换，并结合变换空间拟合与矩正则，使长尾目标更稳定。
 
-2. **时长感知分桶专家** — 多个专家头分别针对不同视频时长区间建模偏差，通过可学习的软路由（Soft Routing）实现差异化纠偏。
+2. **纠偏因子感知模块** — 按视频时长将样本分组，并通过 hard one-hot routing 选择对应专家，与论文定义保持一致。
 
-3. **正态化正则损失** — 强制各时长桶内的 Box-Cox 变换分布满足近似高斯条件（均值→0，方差→1，偏度→0，峰度→3），提供分布层面的训练约束。
-
-4. **辅助观看信号多任务** — 以短播率、完播率、长播率等辅助信号进行多任务学习，为纠偏因子估计提供额外的侧信息。
+3. **多标签感知表征** — 使用短播、完播、有效播、长播及观看阈值标签等辅助信号，为纠偏因子估计提供侧信息。
 
 ## 两阶段训练流程
 
 - **阶段一（Warmup）**：仅训练基础模型，使其充分收敛。
-- **阶段二（联合训练）**：联合优化基础模型与 DADF 纠偏网络，损失由基础 loss、Box-Cox MSE loss、绝对时长 Huber loss 和正态化正则 loss 组合而成。
+- **阶段二（纠偏训练）**：冻结第一阶段预测器，优化 DADF 纠偏网络；损失包括变换空间拟合、绝对时长、矩正则和辅助任务损失。
 
 ## 支持的基础模型
 
@@ -213,6 +217,43 @@ python model/v2_debias/train.py \
 | **MAE**（秒） | 观看时长预测的平均绝对误差 |
 | **XAUC** | 连续标签的排序质量指标（AUC 的推广形式） |
 
+## 主要结果
+
+以下数值直接与当前论文表格对齐，确保仓库和论文使用同一报告口径。MAE 单位为秒，越低越好；XAUC 越高越好。
+
+| Backbone | 方法 | KuaiRec MAE | KuaiRec XAUC | WeChat21 MAE | WeChat21 XAUC |
+|---|---|---:|---:|---:|---:|
+| VR | Base | 4.584 | 0.5578 | 18.681 | 0.6766 |
+| VR | w/ TranSUN | 4.478 | 0.5693 | 18.571 | 0.6787 |
+| VR | w/ DADF | **4.235** | **0.6125** | **17.912** | **0.6902** |
+| WLR | Base | 4.414 | 0.5941 | 18.215 | 0.6861 |
+| WLR | w/ TranSUN | 4.364 | 0.5965 | 18.133 | 0.6876 |
+| WLR | w/ DADF | **4.172** | **0.6227** | **17.838** | **0.6934** |
+| TPM | Base | 4.459 | 0.5495 | 19.545 | 0.6570 |
+| TPM | w/ TranSUN | 4.361 | 0.5971 | 18.529 | 0.6814 |
+| TPM | w/ DADF | **4.166** | **0.6233** | **18.109** | **0.6898** |
+| D2Q | Base | 4.123 | 0.6319 | 17.544 | 0.6935 |
+| D2Q | w/ TranSUN | 4.323 | 0.6082 | 17.855 | 0.6925 |
+| D2Q | w/ DADF | **4.106** | **0.6345** | **17.534** | **0.6946** |
+| CREAD | Base | 4.346 | 0.5927 | 19.128 | 0.6679 |
+| CREAD | w/ TranSUN | 4.395 | 0.5958 | 18.515 | 0.6824 |
+| CREAD | w/ DADF | **4.189** | **0.6211** | **18.164** | **0.6903** |
+| D²CO | Base | 4.613 | 0.5687 | 18.558 | 0.6861 |
+| D²CO | w/ TranSUN | 4.300 | 0.6097 | 18.080 | 0.6868 |
+| D²CO | w/ DADF | **4.168** | **0.6233** | **17.683** | **0.6952** |
+| EGMN | Base | 4.081 | 0.6245 | 18.330 | 0.6896 |
+| EGMN | w/ TranSUN | 4.255 | 0.6120 | 18.099 | 0.6892 |
+| EGMN | w/ DADF | **4.002** | **0.6257** | **17.955** | **0.6911** |
+
+### WLR 消融实验
+
+| 变体 | KuaiRec MAE | KuaiRec XAUC | WeChat21 MAE | WeChat21 XAUC |
+|---|---:|---:|---:|---:|
+| Full DADF | 4.1723 | 0.6227 | 17.8376 | 0.6934 |
+| w/o 动态分布感知变换 | 4.1901 | 0.6210 | 17.8748 | 0.6930 |
+| w/o 纠偏因子感知模块 | 4.1823 | 0.6212 | 17.8454 | 0.6931 |
+| w/o 多标签感知表征 | 4.1865 | 0.6204 | 17.9137 | 0.6920 |
+
 ## 关键超参数
 
 | 参数 | 说明 | KuaiRec | WeChat21 |
@@ -226,17 +267,18 @@ python model/v2_debias/train.py \
 | `--abs_time_weight` | 绝对时长 Huber 损失权重 | 0.8 | 0.8 |
 | `--aux_target_weight` | 辅助任务损失权重 | 0.10 | 0.10 |
 
+Hard duration routing 和冻结第一阶段预测器均为默认行为。`--soft_routing` 与 `--joint_finetune_base` 仅用于显式消融实验。
+
 ## 引用
 
 如果本工作对您有帮助，请引用：
 
 ```bibtex
-@inproceedings{yang2026dadf,
+@misc{yang2026dadf,
   title     = {DADF: A Distribution-Aware Debiasing Framework for Watch-Time Regression in Recommender Systems},
   author    = {Yiqing Yang and Xinlong Zhao and Zhao Liu and Xiao Lv and Ruiming Tang},
-  booktitle = {Proceedings of the 20th ACM Conference on Recommender Systems (RecSys)},
   year      = {2026},
-  address   = {Minneapolis, MN, USA}
+  note      = {Manuscript}
 }
 ```
 

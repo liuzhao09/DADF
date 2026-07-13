@@ -1,6 +1,8 @@
 """
 DebiasNetV2：Box-Cox 变换 + 时长感知分桶专家网络
-参照 online_code/tf_graph.py vtr_debias_aware scope（简化版）
+
+这是与论文方法对齐的公开参考实现，并非完整线上生产代码。生产系统中的
+特征工程、基础多任务塔与服务优化不包含在本仓库中。
 
 与原版的主要差异（离线简化版）：
   - 默认无多任务辅助 logit（原版用 fpr/svr/lvr/evr 等 8 个任务的
@@ -32,7 +34,7 @@ class DebiasNetV2(nn.Module):
 
     输出: [B, 1]，Box-Cox 空间的纠偏因子预测值
 
-    整体结构（参照 tf_graph.py debias_net_tower + debias_net_bucket_{i}_tower）：
+    整体结构：
       [nonlinear(8), duration(1), user_emb, video_emb]
         → input_mlp (128 → 64)
         → bucket_num 个 bucket 专家头各出 [B, 1]
@@ -41,10 +43,10 @@ class DebiasNetV2(nn.Module):
 
     def __init__(self, user_vocab_size, video_vocab_size,
                  embed_dim=16, bucket_num=4, hidden_dim=64,
-                 lambda_init=None, hidden_dim_base=0, hard_routing=False,
+                 lambda_init=None, hidden_dim_base=0, hard_routing=True,
                  use_bucket_emb=True, bucket_mean_proxy=None,
                  shared_user_emb=None, shared_video_emb=None,
-                 bucket_mean_factor=None, use_uncertainty=False,
+                 use_uncertainty=False,
                  use_uv_interaction=False, debias_dropout=0.0,
                  aux_target_names=()):
         super().__init__()
@@ -63,25 +65,6 @@ class DebiasNetV2(nn.Module):
         else:
             bmp = torch.ones(bucket_num, dtype=torch.float32)
         self.register_buffer('bucket_mean_proxy', bmp)
-
-        # bucket_mean_factor：两阶段纠偏 — E[play_time/proxy | bucket]
-        # warmup 后计算，debias_net 只学残差；inference 时乘回系统因子
-        # 值为 1.0 时退化为单阶段（默认）
-        if bucket_mean_factor is not None:
-            bmf2 = torch.tensor(bucket_mean_factor, dtype=torch.float32).clamp(min=1e-4)
-        else:
-            bmf2 = torch.ones(bucket_num, dtype=torch.float32)
-        self.register_buffer('bucket_mean_factor', bmf2)
-        self.use_two_stage = (bucket_mean_factor is not None)
-
-        # 用户级修正：三阶段纠偏（桶级 → 用户级 → 残差）
-        # 用 set_user_factors() 在 warmup 后设置；默认 None = 禁用
-        self.user_mean_factor   = None      # [user_vocab_size], set post-warmup
-        self.use_user_two_stage = False
-
-        # 视频级修正：类似用户级，捕获视频内容质量偏差
-        self.video_mean_factor   = None     # [video_vocab_size], set post-warmup
-        self.use_video_two_stage = False
 
         # Uncertainty feature (EGMN only): mixture entropy as debias input
         self.use_uncertainty = use_uncertainty
@@ -109,14 +92,6 @@ class DebiasNetV2(nn.Module):
         # 时长 bucket 嵌入：将 duration bucket 映射为 embed_dim 维向量
         # 替代原来的标量 duration 输入，提升时长感知能力
         self.duration_bucket_emb = nn.Embedding(bucket_num, embed_dim)
-
-        # Adaptive per-sample lambda：根据 user/video context 调整 lambda 强度
-        # 输出 (-1,1) 标量，通过 lambda_adapter_scale 限制修正幅度
-        self.lambda_adapter = nn.Sequential(
-            nn.Linear(2 * embed_dim, 32), nn.ReLU(),
-            nn.Linear(32, 1), nn.Tanh(),
-        )
-        self.lambda_adapter_scale = 0.05  # 小扰动：NR loss 要求桶内 lambda 近似恒定，大幅修正会破坏正态化约束
 
         # 共享输入 MLP：8（nonlinear logit 变换）+ 2（proxy 比值特征）+ 1（bucket-relative proxy）
         #               + hidden_dim_base（base hidden，可选）
@@ -165,9 +140,7 @@ class DebiasNetV2(nn.Module):
             for _ in range(bucket_num)
         ])
 
-        # Soft routing gate：将 duration 映射到 bucket_num 维 soft 权重
-        # 用轻量 2 层 MLP（duration→32→bucket_num），温度参数 temperature 可学习
-        # 保持 expert output 和 lambda selection 语义一致（同一套 soft_weights）
+        # 论文默认 hard routing。soft gate 仅保留为显式消融选项。
         self.gate_mlp = nn.Sequential(
             nn.Linear(1, 32), nn.ReLU(),
             nn.Linear(32, bucket_num),
@@ -237,48 +210,14 @@ class DebiasNetV2(nn.Module):
 
         return torch.cat(feats, dim=1)
 
-    def set_user_factors(self, user_mean_tensor):
-        """
-        Warmup 后设置用户级纠偏因子（三阶段纠偏第二阶段）。
-        user_mean_tensor: [user_vocab_size] float tensor (CPU)
-        """
-        device = next(self.parameters()).device
-        self.user_mean_factor   = user_mean_tensor.to(device)
-        self.use_user_two_stage = True
-        print('User-level two-stage debias enabled. '
-              'Mean factor={:.4f}, std={:.4f}'.format(
-                  float(user_mean_tensor.mean()), float(user_mean_tensor.std())))
-
-    def set_video_factors(self, video_mean_tensor):
-        """
-        视频级纠偏因子：捕获视频内容质量偏差，和用户级独立叠加。
-        video_mean_tensor: [video_vocab_size] float tensor (CPU)
-        """
-        device = next(self.parameters()).device
-        self.video_mean_factor   = video_mean_tensor.to(device)
-        self.use_video_two_stage = True
-        print('Video-level two-stage debias enabled. '
-              'Mean factor={:.4f}, std={:.4f}'.format(
-                  float(video_mean_tensor.mean()), float(video_mean_tensor.std())))
-
-    def to(self, *args, **kwargs):
-        """Override to() so user/video mean factors follow device moves (multi-GPU safety)."""
-        result = super().to(*args, **kwargs)
-        device = next(result.parameters()).device
-        if result.user_mean_factor is not None:
-            result.user_mean_factor = result.user_mean_factor.to(device)
-        if result.video_mean_factor is not None:
-            result.video_mean_factor = result.video_mean_factor.to(device)
-        return result
-
     # ─────────────────────────────────────────────────────────
     # 公共方法
     # ─────────────────────────────────────────────────────────
 
-    def _soft_weights(self, duration, thresholds=None):
+    def _routing_weights(self, duration, thresholds=None):
         """
-        Soft routing gate：将 duration 映射到 [B, bucket_num] soft 权重。
-        hard_routing=True 时退回 duration_to_onehot（消融实验用）。
+        默认按照论文使用 duration bucket 的 hard one-hot routing。
+        hard_routing=False 仅用于显式的 soft-routing 消融实验。
         """
         if self.hard_routing and thresholds is not None:
             return duration_to_onehot(duration, thresholds)
@@ -286,29 +225,14 @@ class DebiasNetV2(nn.Module):
         gate_logits = self.gate_mlp(duration)                  # [B, bucket_num]
         return torch.softmax(gate_logits / temperature, dim=1) # [B, bucket_num]
 
-    def get_lambda_per_sample(self, duration, thresholds, user_id=None, video_id=None):
+    def get_lambda_per_sample(self, duration, thresholds):
         """
-        根据时长 bucket 为每个样本选取对应 λ，返回 [B, 1]。
-        使用 soft routing（与 forward 一致），使 lambda 选择可微分。
-        hard_routing=True 时使用 hard one-hot（保持与 forward 语义一致）。
-
-        user_id, video_id（可选）：提供时激活 adaptive lambda，
-        根据 user/video embedding 对 base_lambda 做小幅修正（±lambda_adapter_scale）。
+        根据论文定义的时长 bucket 为每个样本选取组级 λ，返回 [B, 1]。
+        默认 hard one-hot；soft-routing 消融时使用相同 gate 权重。
         """
-        soft_w         = self._soft_weights(duration, thresholds)         # [B, bucket_num]
+        routing_w      = self._routing_weights(duration, thresholds)      # [B, bucket_num]
         lambda_clipped = torch.clamp(self.lambda_params, -1.0, 1.0)      # [bucket_num]
-        base_lambda    = (soft_w * lambda_clipped.unsqueeze(0)).sum(dim=1, keepdim=True)  # [B, 1]
-
-        # §4.2 anchor ablation: skip per-sample adapter when disable_lambda_adapter=True
-        if (user_id is not None and video_id is not None
-                and not getattr(self, 'disable_lambda_adapter', False)):
-            with torch.no_grad():
-                u = self.user_emb(user_id.view(-1))   # [B, embed_dim]
-                v = self.video_emb(video_id.view(-1)) # [B, embed_dim]
-            adapt_delta = self.lambda_adapter(torch.cat([u, v], dim=1))  # [B, 1]
-            return torch.clamp(base_lambda + self.lambda_adapter_scale * adapt_delta, -1.0, 1.0)
-
-        return base_lambda
+        return (routing_w * lambda_clipped.unsqueeze(0)).sum(dim=1, keepdim=True)
 
     def _expand_aux_logits(self, aux_logits):
         """
@@ -402,10 +326,8 @@ class DebiasNetV2(nn.Module):
             [head(hidden) for head in self.bucket_heads], dim=1
         )                                                      # [B, bucket_num]
 
-        # Soft routing：soft_weights 同时用于 expert output 和 lambda，保持语义一致
-        soft_w = self._soft_weights(duration, thresholds)     # [B, bucket_num]
-
-        debias_output = (bucket_outputs * soft_w).sum(dim=1, keepdim=True)  # [B, 1]
+        routing_w = self._routing_weights(duration, thresholds)  # [B, bucket_num]
+        debias_output = (bucket_outputs * routing_w).sum(dim=1, keepdim=True)  # [B, 1]
         if return_aux:
             return debias_output, aux_logits_dict
         return debias_output

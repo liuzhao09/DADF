@@ -1,10 +1,16 @@
 # DADF: Distribution-Aware Debiasing Framework for Watch-Time Regression
 
-[![RecSys 2026](https://img.shields.io/badge/RecSys-2026-blue)](https://recsys.acm.org/recsys26/)
+[![Manuscript](https://img.shields.io/badge/status-manuscript-blue)](#scope-and-reproducibility)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-1.12+-orange.svg)](https://pytorch.org/)
 
-Official implementation of **DADF: A Distribution-Aware Debiasing Framework for Watch-Time Regression in Recommender Systems** (RecSys 2026).
+Reference implementation accompanying **DADF: A Distribution-Aware Debiasing Framework for Watch-Time Regression in Recommender Systems**.
+
+## Scope and Reproducibility
+
+This repository provides a research reference implementation of the DADF structure used for the public-benchmark study. It is aligned with the method described in the manuscript, but it is **not the complete production implementation**. Proprietary production feature pipelines, first-stage multi-task towers, serving infrastructure, and system optimizations are not included. The public code reconstructs the method with public-dataset features and auxiliary labels so that the core architecture can be inspected and evaluated.
+
+Unless an ablation flag is explicitly supplied, the public implementation follows the manuscript: the first-stage predictor is frozen during correction training, duration groups use hard routing, Box-Cox parameters are group-level rather than adapted per sample, and no additional user-level or video-level correction stage is applied.
 
 ## Overview
 
@@ -20,18 +26,16 @@ where `b_hat` is the predicted correction factor estimated from ranking features
 
 ### Key Components
 
-1. **Box-Cox Transformation** — Transforms the correction target into an approximately Gaussian space, enabling stable regression and variance-aware normalization.
+1. **Dynamic Distribution-Aware Transformation** — Applies a group-specific Box-Cox transformation to stabilize long-tailed multiplicative correction targets, together with transformed-space and moment regularization losses.
 
-2. **Duration-Aware Bucket Experts** — Multiple expert heads specialized for different video duration intervals, with learned soft routing to capture duration-specific bias patterns.
+2. **Debias-Factor-Aware Correction** — Assigns each sample to a duration group and selects the corresponding expert through hard one-hot routing, matching the manuscript definition.
 
-3. **Normal Regularization Loss** — Enforces the transformed distribution to be approximately Gaussian (zero mean, unit variance, zero skewness, kurtosis ≈ 3) within each bucket, providing distributional constraints during training.
-
-4. **Auxiliary Watch-Time Targets** — Multi-task learning with auxiliary engagement signals (short-view rate, finish-play rate, long-view rate, etc.) providing side information for more accurate correction factor estimation.
+3. **Multi-Label-Aware Representation** — Uses auxiliary engagement signals (short view, completion, effective view, long view, and thresholded watch labels) as side information for correction-factor estimation.
 
 ### Two-Stage Training
 
 - **Stage 1 (Warmup)**: Train only the base model to convergence.
-- **Stage 2 (Joint)**: Fine-tune jointly with the DADF correction module using combined base loss + Box-Cox MSE loss + absolute time Huber loss + normal regularization loss.
+- **Stage 2 (Correction)**: Freeze the first-stage predictor and optimize the DADF correction module using transformed-space fitting, absolute-time loss, moment regularization, and auxiliary-task losses.
 
 ### Supported Base Models
 
@@ -234,23 +238,40 @@ DADF is evaluated on the following metrics:
 
 ## Main Results
 
-DADF consistently improves over base models across all 7 backbones on both datasets.
+The values below are copied from the current manuscript table so that the repository and paper use one reporting source of truth. MAE is in seconds; lower is better. Higher XAUC is better.
 
-### KuaiRec (MAE in seconds, lower is better)
+| Backbone | Method | KuaiRec MAE | KuaiRec XAUC | WeChat21 MAE | WeChat21 XAUC |
+|---|---|---:|---:|---:|---:|
+| VR | Base | 4.584 | 0.5578 | 18.681 | 0.6766 |
+| VR | w/ TranSUN | 4.478 | 0.5693 | 18.571 | 0.6787 |
+| VR | w/ DADF | **4.235** | **0.6125** | **17.912** | **0.6902** |
+| WLR | Base | 4.414 | 0.5941 | 18.215 | 0.6861 |
+| WLR | w/ TranSUN | 4.364 | 0.5965 | 18.133 | 0.6876 |
+| WLR | w/ DADF | **4.172** | **0.6227** | **17.838** | **0.6934** |
+| TPM | Base | 4.459 | 0.5495 | 19.545 | 0.6570 |
+| TPM | w/ TranSUN | 4.361 | 0.5971 | 18.529 | 0.6814 |
+| TPM | w/ DADF | **4.166** | **0.6233** | **18.109** | **0.6898** |
+| D2Q | Base | 4.123 | 0.6319 | 17.544 | 0.6935 |
+| D2Q | w/ TranSUN | 4.323 | 0.6082 | 17.855 | 0.6925 |
+| D2Q | w/ DADF | **4.106** | **0.6345** | **17.534** | **0.6946** |
+| CREAD | Base | 4.346 | 0.5927 | 19.128 | 0.6679 |
+| CREAD | w/ TranSUN | 4.395 | 0.5958 | 18.515 | 0.6824 |
+| CREAD | w/ DADF | **4.189** | **0.6211** | **18.164** | **0.6903** |
+| D²CO | Base | 4.613 | 0.5687 | 18.558 | 0.6861 |
+| D²CO | w/ TranSUN | 4.300 | 0.6097 | 18.080 | 0.6868 |
+| D²CO | w/ DADF | **4.168** | **0.6233** | **17.683** | **0.6952** |
+| EGMN | Base | 4.081 | 0.6245 | 18.330 | 0.6896 |
+| EGMN | w/ TranSUN | 4.255 | 0.6120 | 18.099 | 0.6892 |
+| EGMN | w/ DADF | **4.002** | **0.6257** | **17.955** | **0.6911** |
 
-| Model | Base | + DADF | Improvement |
-|-------|------|--------|-------------|
-| WLR   | ~5.2 | ~4.17  | -19.8% |
-| EGMN  | ~5.0 | ~4.00  | -20.0% |
-| D2Q   | ~5.1 | ~4.11  | -19.4% |
+### WLR Ablation
 
-### WeChat21 (MAE in seconds, lower is better)
-
-| Model | Base | + DADF | Improvement |
-|-------|------|--------|-------------|
-| WLR   | ~22  | ~17.84 | -18.9% |
-| EGMN  | ~22  | ~17.96 | -18.4% |
-| D2Q   | ~23  | ~17.53 | -23.8% |
+| Variant | KuaiRec MAE | KuaiRec XAUC | WeChat21 MAE | WeChat21 XAUC |
+|---|---:|---:|---:|---:|
+| Full DADF | 4.1723 | 0.6227 | 17.8376 | 0.6934 |
+| w/o Distribution-Aware Transformation | 4.1901 | 0.6210 | 17.8748 | 0.6930 |
+| w/o Debias-Factor-Aware Correction | 4.1823 | 0.6212 | 17.8454 | 0.6931 |
+| w/o Multi-Label-Aware Representation | 4.1865 | 0.6204 | 17.9137 | 0.6920 |
 
 ## Key Hyperparameters
 
@@ -265,17 +286,18 @@ DADF consistently improves over base models across all 7 backbones on both datas
 | `--abs_time_weight` | Absolute time Huber loss weight | 0.8 | 0.8 |
 | `--aux_target_weight` | Auxiliary target loss weight | 0.10 | 0.10 |
 
+Hard duration routing and freezing the first-stage predictor are defaults. `--soft_routing` and `--joint_finetune_base` are provided only for explicit ablation studies.
+
 ## Citation
 
 If you find this work useful, please cite:
 
 ```bibtex
-@inproceedings{yang2026dadf,
+@misc{yang2026dadf,
   title     = {DADF: A Distribution-Aware Debiasing Framework for Watch-Time Regression in Recommender Systems},
   author    = {Yiqing Yang and Xinlong Zhao and Zhao Liu and Xiao Lv and Ruiming Tang},
-  booktitle = {Proceedings of the 20th ACM Conference on Recommender Systems (RecSys)},
   year      = {2026},
-  address   = {Minneapolis, MN, USA}
+  note      = {Manuscript}
 }
 ```
 

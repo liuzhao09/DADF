@@ -3,7 +3,7 @@
 # run_DADF_wlr.sh — DADF on WLR backbone (KuaiRec + WeChat21)
 #
 # DADF: Distribution-Aware Debiasing Framework for Watch-Time Regression
-# Paper: RecSys 2026
+# Reference implementation accompanying the DADF manuscript
 #
 # This script runs DADF with WLR (Weighted Logistic Regression) as the base
 # model on both KuaiRec and WeChat21 datasets.
@@ -86,12 +86,14 @@ if [[ "$DATASET" == "wechat21" || "$DATASET" == "all" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# DADF optimal configuration (aligned with paper Table 2 main results)
+# DADF reference configuration (aligned with paper Table 1 main results)
 #
 # WLR + DADF configuration:
-#   - Two-stage training: warmup (base only) + joint (base + DADF losses)
+#   - Two-stage training: base warmup + correction training with the base frozen
 #   - Box-Cox transformation for distribution normalization
 #   - Duration-aware bucket experts (K=4 for KuaiRec, K=3 for WeChat21)
+#   - Hard one-hot duration routing (default; matches the manuscript)
+#   - Frozen first-stage predictor during correction training (default)
 #   - Auxiliary watch-time targets for multi-task learning
 #   - Normal regularization loss to enforce Gaussian-like distribution
 # ---------------------------------------------------------------------------
