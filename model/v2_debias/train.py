@@ -106,8 +106,9 @@ def get_args():
                         help='使用全量数据 (kuairec_data_full.pkl)')
     parser.add_argument('--pkl_suffix', type=str, default='',
                         help='覆盖默认 pkl 后缀（如 _bins30 → kuairec_data_bins30.pkl；覆盖 --full-data）')
-    parser.add_argument('--hard_routing', action='store_true',
-                        help='强制使用 hard one-hot bucket routing（消融 soft routing）')
+    parser.add_argument('--soft_routing', dest='hard_routing', action='store_false',
+                        default=True,
+                        help='使用 learned soft gate（仅用于消融；默认与论文一致采用 hard one-hot routing）')
     parser.add_argument('--lambda_init', type=float, nargs='+', default=None,
                         help='手动指定 lambda_init（覆盖数据集默认值），格式: 0.30 0.49 0.67')
     # ── Ablation flags ──────────────────────────────────────────────────────
@@ -141,14 +142,6 @@ def get_args():
                         help='辅助目标 BCE loss 权重；各辅助目标 BCE 先求均值，再乘该权重')
     parser.add_argument('--two_stage_debias', action='store_true',
                         help='两阶段纠偏：warmup后用MLE Box-Cox拟合每桶lambda初始化，debias_net从更好起点学习（替代旧BMF方案）')
-    parser.add_argument('--user_two_stage', action='store_true',
-                        help='三阶段纠偏：在桶级修正后再加用户级修正（需先有--two_stage_debias）')
-    parser.add_argument('--user_factor_epoch', type=int, default=-1,
-                        help='用户级因子计算时机（-1=warmup结束时；建议设为warmup+joint//2等proxy收敛后）')
-    parser.add_argument('--video_two_stage', action='store_true',
-                        help='视频级纠偏：捕获视频内容质量系统偏差（需先有--two_stage_debias）')
-    parser.add_argument('--video_factor_epoch', type=int, default=-1,
-                        help='视频级因子计算时机（-1=warmup结束时）')
     parser.add_argument('--use_uncertainty', action='store_true',
                         help='使用EGMN混合模型不确定性作为debias特征（仅EGMN有效）')
     parser.add_argument('--confidence_weighted_loss', action='store_true',
@@ -161,10 +154,9 @@ def get_args():
                              'physical=强制 _PHYS_BUCKET_TABLE 白名单（K 不在表里会报错）；'
                              'quantile=跳过 physical 表强制走 np.quantile fallback。'
                              'K=1 无论哪种 mode 都是空 thresholds（global Box-Cox）。')
-    parser.add_argument('--freeze_base', action='store_true',
-                        help='warmup后冻结base model参数（只训练debias_net）；对EGMN有效，避免base持续改进干扰debias训练')
-    parser.add_argument('--user_factor_train_only', action='store_true',
-                        help='user/video_mean_factor只用于训练目标归一化，推理时不乘回（XAUC导向；也控制video_two_stage的推理因子；乘回会放大跨用户/视频差异，hurt XAUC）')
+    parser.add_argument('--joint_finetune_base', dest='freeze_base', action='store_false',
+                        default=True,
+                        help='联合阶段继续微调 base model（仅用于消融；默认按论文冻结 first-stage predictor）')
     # ── 实验/消融控制参数 ─────────────────────────────────────────────────────
     parser.add_argument('--alpha_max', type=float, default=1.0,
                         help='渐变 warmup 最大 alpha 上界（default 1.0=无限制；<1.0=限制 debias loss 贡献比例）')
@@ -173,19 +165,12 @@ def get_args():
     parser.add_argument('--debias_factor_min', type=float, default=0.1,
                         help='神经网络纠偏因子下界（default 0.1）')
     parser.add_argument('--final_debias_factor_max', type=float, default=None,
-                        help='所有阶段（two_stage/user/video）后的最终因子上界（default None=不裁剪）'
+                        help='DADF correction factor 的最终上界（default None=不裁剪）'
                              '1.1=最多允许 10%% 修正；D2Q final_clip 实验（D_R5）')
     parser.add_argument('--final_debias_factor_min', type=float, default=None,
                         help='最终因子下界（default None=不裁剪）')
-    parser.add_argument('--bmf_scale', type=float, default=1.0,
-                        help='bucket_mean_factor 缩放系数（default 1.0=全量；0=禁用桶修正；0.5=半量）'
-                             'bmf_applied = 1.0 + bmf_scale × (bmf_raw − 1.0)')
     parser.add_argument('--nr_pred_weight', type=float, default=-1.0,
                         help='预测侧 NR loss 权重（default -1.0=使用 0.05×nr_weight；>0 独立控制）')
-    parser.add_argument('--disable_lambda_adapter', action='store_true',
-                        help='禁用 per-sample lambda adapter (u/v 扰动)。'
-                             '开启后 get_lambda_per_sample() 只返回 soft_w·λ_k，'
-                             '用于 A2 global Box-Cox ablation。')
     parser.add_argument('--disable_proxy_features', action='store_true',
                         help='§4.2 anchor ablation: drop f9/f10/f11 proxy-distribution features '
                              'from debias net input (log(proxy), log(proxy/dur), log(proxy/bucket_mean))')
@@ -458,101 +443,6 @@ def compute_lambda_from_residuals(adapter, dataloader_train, thresholds, device,
     return lambda_init
 
 
-def compute_user_mean_debias_factor(adapter, dataloader_train, user_vocab_size, device,
-                                     n_samples=200000):
-    """
-    Post-warmup: compute per-user E[play_time/proxy | user] from training data.
-    用于三阶段纠偏：在桶级修正之后，再用用户级系统偏差修正。
-    用户的 mean_factor 反映其个性化参与度偏差（有的用户习惯性多看/少看）。
-    min_count: 用户至少有 min_count 次交互才信任其均值（否则保持 1.0）。
-    """
-    adapter.eval()
-    user_sum   = torch.zeros(user_vocab_size, device=device)
-    user_count = torch.zeros(user_vocab_size, device=device)
-    total = 0
-
-    with torch.no_grad():
-        for features, label in dataloader_train:
-            _, proxy = adapter.get_base_pred(features)
-            play_time = label.float().view(-1, 1)
-            valid = (play_time.view(-1) > 1e-7)
-
-            factor = (play_time / proxy.clamp(min=1e-7)).clamp(0.001, 50.0).view(-1)
-            uid = features['user_id'].view(-1).clamp(0, user_vocab_size - 1)
-
-            valid_factor = factor * valid.float()
-            user_sum.scatter_add_(0, uid, valid_factor)
-            user_count.scatter_add_(0, uid, valid.float())
-
-            total += label.shape[0]
-            if total >= n_samples:
-                break
-
-    # Shrinkage estimator: pull toward global mean for sparse users
-    # alpha = n / (n + k) where k is shrinkage strength (default=10)
-    # users with n >> k: alpha → 1 (trust raw estimate)
-    # users with n < k:  alpha → 0 (fall back to global mean)
-    shrink_k     = 10.0
-    raw_mean     = (user_sum / user_count.clamp(min=1.0))
-    global_mean  = (user_sum.sum() / user_count.sum().clamp(min=1.0))
-    alpha        = user_count / (user_count + shrink_k)
-    user_mean_factor = (alpha * raw_mean + (1.0 - alpha) * global_mean).clamp(0.2, 5.0)
-
-    reliable = (user_count >= 1)
-    print('User mean debias factor: coverage={}/{} users, mean={:.4f}, std={:.4f}'.format(
-        int(reliable.sum().item()), user_vocab_size,
-        float(user_mean_factor[reliable].mean().item()) if reliable.any() else 1.0,
-        float(user_mean_factor[reliable].std().item()) if reliable.sum() > 1 else 0.0,
-    ))
-    adapter.train()
-    return user_mean_factor.cpu()   # return as CPU tensor
-
-
-def compute_video_mean_debias_factor(adapter, dataloader_train, video_vocab_size, device,
-                                      n_samples=300000):
-    """
-    Post-warmup (delayed): compute per-video E[play_time/proxy | video] from training data.
-    使用 James-Stein shrinkage 估计器替代硬阈值，视频级偏差修正。
-    """
-    adapter.eval()
-    vid_sum   = torch.zeros(video_vocab_size, device=device)
-    vid_count = torch.zeros(video_vocab_size, device=device)
-    total = 0
-
-    with torch.no_grad():
-        for features, label in dataloader_train:
-            _, proxy = adapter.get_base_pred(features)
-            play_time = label.float().view(-1, 1)
-            valid = (play_time.view(-1) > 1e-7)
-
-            factor = (play_time / proxy.clamp(min=1e-7)).clamp(0.001, 50.0).view(-1)
-            vid = features['video_id'].view(-1).clamp(0, video_vocab_size - 1)
-
-            valid_factor = factor * valid.float()
-            vid_sum.scatter_add_(0, vid, valid_factor)
-            vid_count.scatter_add_(0, vid, valid.float())
-
-            total += label.shape[0]
-            if total >= n_samples:
-                break
-
-    # Shrinkage estimator for video factors (same as user, tighter clip)
-    shrink_k      = 10.0
-    raw_mean_v    = (vid_sum / vid_count.clamp(min=1.0))
-    global_mean_v = (vid_sum.sum() / vid_count.sum().clamp(min=1.0))
-    alpha_v       = vid_count / (vid_count + shrink_k)
-    vid_mean_factor = (alpha_v * raw_mean_v + (1.0 - alpha_v) * global_mean_v).clamp(0.3, 3.0)
-
-    reliable = (vid_count >= 1)
-    print('Video mean debias factor: coverage={}/{} videos, mean={:.4f}, std={:.4f}'.format(
-        int(reliable.sum().item()), video_vocab_size,
-        float(vid_mean_factor[reliable].mean().item()) if reliable.any() else 1.0,
-        float(vid_mean_factor[reliable].std().item()) if reliable.sum() > 1 else 0.0,
-    ))
-    adapter.train()
-    return vid_mean_factor.cpu()
-
-
 def compute_log_proxy_mean(dataloader_train):
     log_vals = []
     for _, label in dataloader_train:
@@ -703,25 +593,12 @@ def test(args, adapter, debias_net, dataloaders, thresholds, bucket_json_path=No
                 proxy=proxy,
                 uncertainty=uncertainty,
             )
-            lambda_tensor = debias_net.get_lambda_per_sample(duration, thresholds, user_id=features['user_id'], video_id=features['video_id'])
+            lambda_tensor = debias_net.get_lambda_per_sample(duration, thresholds)
             _dfmin = getattr(args, 'debias_factor_min', 0.1)
             _dfmax = getattr(args, 'debias_factor_max', 10.0)
             debias_factor = boxcox_inverse(
                 torch.clamp(debias_v2_output, -6.0, 6.0), lambda_tensor
             ).clamp(_dfmin, _dfmax)
-            # Three-stage: multiply back user-level factor
-            # ONLY if not user_factor_train_only (train_only: factor used for training normalization only, not inference)
-            if (getattr(debias_net, 'use_user_two_stage', False) and debias_net.user_mean_factor is not None
-                    and not getattr(args, 'user_factor_train_only', False)):
-                uid = features['user_id'].view(-1).clamp(0, debias_net.user_mean_factor.shape[0]-1)
-                user_factor = debias_net.user_mean_factor[uid].view(-1, 1).clamp(min=0.1)
-                debias_factor = (debias_factor * user_factor).clamp(0.05, 20.0)
-            # Video-level factor (same train_only semantics as user factor)
-            if (getattr(debias_net, 'use_video_two_stage', False) and debias_net.video_mean_factor is not None
-                    and not getattr(args, 'user_factor_train_only', False)):
-                vid = features['video_id'].view(-1).clamp(0, debias_net.video_mean_factor.shape[0]-1)
-                video_factor = debias_net.video_mean_factor[vid].view(-1, 1).clamp(min=0.1)
-                debias_factor = (debias_factor * video_factor).clamp(0.05, 20.0)
             final_pred = debias_factor * proxy
             # Final factor clip (after all stages): optional narrow range for conservative models
             # Useful for D2Q where proxy is well-calibrated; prevents two_stage over-correction
@@ -852,36 +729,6 @@ def train_joint(args, adapter, debias_net, dataloader_train, thresholds, dataloa
             print('Freeze base: base model frozen, optimizer rebuilt with debias_net only (lr={:.5f})'.format(
                 args.debias_lr * args.debias_lr_scale))
 
-        # 三阶段：用户级修正（--user_two_stage），可延迟到 proxy 更收敛的时机
-        # user_factor_epoch=-1 → warmup结束时（默认但易噪声）
-        # user_factor_epoch=N  → epoch==N 时计算（建议 warmup+joint//3 给 proxy 收敛时间）
-        _ufe = getattr(args, 'user_factor_epoch', -1)
-        _user_compute_epoch = (args.warmup_epoch + 1) if _ufe < 0 else _ufe
-        if (not is_warmup and epoch == _user_compute_epoch
-                and getattr(args, 'user_two_stage', False)
-                and not debias_net.use_user_two_stage):  # compute only once
-            user_vocab_size = get_vocab_size(dataloaders.description, 'user_id')
-            print('Computing user_mean_debias_factor at epoch {}...'.format(epoch))
-            umf = compute_user_mean_debias_factor(
-                adapter, dataloader_train, user_vocab_size,
-                next(debias_net.parameters()).device
-            )
-            debias_net.set_user_factors(umf)
-
-        # 视频级修正（--video_two_stage），可延迟计算
-        _vfe = getattr(args, 'video_factor_epoch', -1)
-        _video_compute_epoch = (args.warmup_epoch + 1) if _vfe < 0 else _vfe
-        if (not is_warmup and epoch == _video_compute_epoch
-                and getattr(args, 'video_two_stage', False)
-                and not debias_net.use_video_two_stage):
-            video_vocab_size = get_vocab_size(dataloaders.description, 'video_id')
-            print('Computing video_mean_debias_factor at epoch {}...'.format(epoch))
-            vmf = compute_video_mean_debias_factor(
-                adapter, dataloader_train, video_vocab_size,
-                next(debias_net.parameters()).device
-            )
-            debias_net.set_video_factors(vmf)
-
         adapter.train()
         debias_net.train()
 
@@ -904,19 +751,7 @@ def train_joint(args, adapter, debias_net, dataloader_train, thresholds, dataloa
                     p, proxy, base_hidden = adapter.get_base_pred_and_hidden(features)
 
                 debias_factor_v2   = play_time / proxy
-                # Three-stage: divide by user-level factor (after bucket correction)
-                if getattr(debias_net, 'use_user_two_stage', False) and debias_net.user_mean_factor is not None:
-                    with torch.no_grad():
-                        uid = features['user_id'].view(-1).clamp(0, debias_net.user_mean_factor.shape[0]-1)
-                        user_factor = debias_net.user_mean_factor[uid].view(-1, 1).clamp(min=0.1)
-                    debias_factor_v2 = (debias_factor_v2 / user_factor).clamp(0.001, 50.0)
-                # Video-level factor
-                if getattr(debias_net, 'use_video_two_stage', False) and debias_net.video_mean_factor is not None:
-                    with torch.no_grad():
-                        vid = features['video_id'].view(-1).clamp(0, debias_net.video_mean_factor.shape[0]-1)
-                        video_factor = debias_net.video_mean_factor[vid].view(-1, 1).clamp(min=0.1)
-                    debias_factor_v2 = (debias_factor_v2 / video_factor).clamp(0.001, 50.0)
-                lambda_tensor      = debias_net.get_lambda_per_sample(duration, thresholds, user_id=features['user_id'], video_id=features['video_id'])
+                lambda_tensor      = debias_net.get_lambda_per_sample(duration, thresholds)
                 debias_trans_label = boxcox_transform(debias_factor_v2, lambda_tensor)
 
                 mask_label_valid  = (debias_trans_label >= -6.0) & (debias_trans_label <= 6.0)
@@ -1181,13 +1016,6 @@ if __name__ == '__main__':
         print('KuaiRec+EGMN: label_debias_weight auto-set to 3.0')
     # --no_auto_debias flag：禁用所有 EGMN/D2Q 的 debias 自动配置（消融实验用）
     _no_auto = getattr(args, 'no_auto_debias', False)
-    # KuaiRec+EGMN user_factor_train_only：user_mean_factor 会放大跨用户参与度差异，hurt XAUC
-    # 自动启用 train_only 模式：仅用于训练目标归一化，推理时不乘回
-    if (not _no_auto and args.dataset_name == 'kuairec' and args.base_model == 'egmn'
-            and (getattr(args, 'user_two_stage', False) or getattr(args, 'video_two_stage', False))
-            and not getattr(args, 'user_factor_train_only', False)):
-        args.user_factor_train_only = True
-        print('KuaiRec+EGMN+user/video_two_stage: user_factor_train_only auto-set to True (prevents cross-user/video XAUC degradation)')
     # KuaiRec+EGMN debias_lr=0.0001：更慢的 debias 学习率（Phase 9 val-split 跨 seed 验证）
     # seed=0:  baseline XAUC=0.6036 MAE=4.238 → lr=1e-4 XAUC=0.6128 MAE=4.086 (+0.0092/-0.152)
     # seed=42: baseline XAUC=0.6002 MAE=4.236 → lr=1e-4 XAUC=0.6094 MAE=4.074 (+0.0092/-0.162)
@@ -1196,41 +1024,21 @@ if __name__ == '__main__':
             and args.debias_lr == 0.01):
         args.debias_lr = 0.0001
         print('KuaiRec+EGMN: debias_lr auto-set to 0.0001 (Phase 9 cross-seed verified: XAUC +0.0092, MAE -0.155 on seeds 0/42)')
-    # KuaiRec+EGMN 最优配置：two_stage_debias + user_two_stage
+    # KuaiRec+EGMN：启用论文中的 per-bucket Box-Cox 初始化流程
     if (not _no_auto and args.dataset_name == 'kuairec' and args.base_model == 'egmn'
             and not getattr(args, 'two_stage_debias', False)):
         args.two_stage_debias = True
         print('KuaiRec+EGMN: two_stage_debias auto-set to True')
-    if (not _no_auto and args.dataset_name == 'kuairec' and args.base_model == 'egmn'
-            and not getattr(args, 'user_two_stage', False)):
-        args.user_two_stage = True
-        args.user_factor_train_only = True
-        print('KuaiRec+EGMN: user_two_stage+user_factor_train_only auto-set (best: XAUC=0.6108, ΔXAUC=+0.0029)')
     # KuaiRec+EGMN: confidence_weighted_loss — EGMN mixture confidence用于加权debias loss
     # VALIDATED (2026-04-19, E_R2 experiment):
     #   E_R2 (conf_weighted+auto_factor): Best=0.6130, ΔXAUC=+0.0013, beats E_R4a(0.6128)
     #   Mechanism: high-confidence EGMN predictions get more debias gradient →
-    #   reduces post-user_ts oscillation (ep10-12: 0.6126/0.6109/0.6121 vs E_R4a 0.6114/0.6103/0.6113)
+    #   reduces correction-stage oscillation on the internal ablation runs
     #   Note: slightly reduces base XAUC (0.6117 vs E_R4a 0.6126) but improves final debias XAUC
     if (not _no_auto and args.dataset_name == 'kuairec' and args.base_model == 'egmn'
             and not getattr(args, 'confidence_weighted_loss', False)):
         args.confidence_weighted_loss = True
-        print('KuaiRec+EGMN: confidence_weighted_loss auto-set (reduces post-user_ts oscillation, E_R2: 0.6130, E_R4b: 0.6132)')
-    # KuaiRec+EGMN: video_two_stage — 视频内容质量系统偏差修正
-    # VALIDATED:
-    #   E_R3 (video_ts + conf_weighted + user_factor_ep=8, ep=12): 0.6144
-    #   E_P3_1 (no video_ts + conf_weighted + user_factor_ep=10, ep=15): **0.6145** (NEW BEST!)
-    #   → ep=15 slightly better than ep=12 even without video_ts (ep=12 → ep=15 +0.0001)
-    #   → video_ts auto-disables for ep=15 (warmup>4): auto-settings correct
-    # ⚠️ WARNING (E_P3_4): video_ts alone (WITHOUT user_ts) is DESTRUCTIVE
-    #   video_ts only: base=0.6107 < baseline 0.6122!, ΔXAUC=-0.0026 (harmful!)
-    #   video_ts REQUIRES user_ts (user_two_stage) to be beneficial
-    #   Current auto-setting correctly enables both together → safe
-    if (not _no_auto and args.dataset_name == 'kuairec' and args.base_model == 'egmn'
-            and not getattr(args, 'video_two_stage', False)):
-        args.video_two_stage = True
-        args.user_factor_train_only = True  # video factors must not apply at inference
-        print('KuaiRec+EGMN: video_two_stage auto-set (E_R3=0.6144(ep=12), E_P3_1=0.6145(ep=15 no video_ts); requires user_two_stage!)')
+        print('KuaiRec+EGMN: confidence_weighted_loss auto-set')
     # ══ KuaiRec+EGMN full-data 专属覆盖（Phase 13 验证）══════════════════════════
     # 10pct 的最优超参在 full-data 上 MAE 爆（F13_2: base 4.12 → final 4.29，+4.1%）
     # Full-data: N_train 10×, Adagrad 有效 lr ~1/√10，lr=1e-4 debias head 饿死
@@ -1250,7 +1058,6 @@ if __name__ == '__main__':
     # ═══════════════════════════════════════════════════════════════════════════
     # KuaiRec+D2Q 最优配置：two_stage_debias + debias_lr=0.001
     # 实验(10%): two_stage+lr=0.001 XAUC=0.6131 > 旧默认0.6124（+0.0007）
-    # 注意: user_two_stage 对 D2Q 有害（ep4 dip严重）— 不启用
     if (not _no_auto and args.dataset_name == 'kuairec' and args.base_model == 'd2q'
             and not getattr(args, 'two_stage_debias', False)):
         args.two_stage_debias = True
@@ -1322,36 +1129,6 @@ if __name__ == '__main__':
         print('Warmup: {} epochs ({} iters/epoch)'.format(
             args.warmup_epoch, _iters_per_epoch))
 
-    # KuaiRec+EGMN: delay user_factor_epoch to alpha=1.0 timing
-    # Prevents the "ep4/ep5 dip" caused by user_two_stage introducing instability
-    # when alpha < 1.0 during gradual warmup. Formula: alpha=1.0 at epoch =
-    # warmup_epoch + warmup_epoch (= 2*warmup_epoch), since
-    # alpha = min(1.0, joint_epoch/warmup_epoch) → 1.0 when joint_epoch=warmup_epoch.
-    # VALIDATED (2026-04-19, E_R4a experiment):
-    #   E_R4a trajectory: ep5=0.5876, ep6=0.6044, ep7=0.6055 → ep8=0.6128 (jump!) → ep9=0.6128
-    #   E3 (default ep5 user_ts): ep5=0.5855 (dip) → ... → ep13=0.6128 (peak after 9 joint epochs)
-    #   E_R4a reaches E3's peak at ep8 (4 joint epochs) with 6 more remaining → can exceed 0.6128
-    if (not _no_auto and args.dataset_name == 'kuairec' and args.base_model == 'egmn'
-            and getattr(args, 'user_two_stage', False)
-            and getattr(args, 'user_factor_epoch', -1) == -1
-            and not getattr(args, 'no_gradual_warmup', False)):
-        args.user_factor_epoch = 2 * args.warmup_epoch
-        print('KuaiRec+EGMN: user_factor_epoch auto-set to {} (alpha=1.0 timing, prevents ep-dip)'.format(
-            args.user_factor_epoch))
-
-    # KuaiRec+EGMN: disable video_two_stage for longer warmup (>4 epochs)
-    # E_R5 experiment (2026-04-19): video_ts + ep=15 (warmup=5) = 0.6108 ← WORSE than E_R4b(no video_ts)=0.6132
-    # Mechanism: longer warmup → slower alpha ramp → video_ts introduces interference with weak gradient
-    # E_R3 (ep=12, warmup=4): video_ts HELPS (0.6144 >> 0.6132 without video_ts)
-    # E_R5 (ep=15, warmup=5): video_ts HURTS (0.6108 << 0.6132 without video_ts)
-    # Solution: video_ts only when warmup_epoch <= 4 (alpha ramp fast enough)
-    if (not _no_auto and args.dataset_name == 'kuairec' and args.base_model == 'egmn'
-            and getattr(args, 'video_two_stage', False)
-            and args.warmup_epoch > 4):
-        args.video_two_stage = False
-        print('KuaiRec+EGMN: video_two_stage auto-DISABLED (warmup_epoch={}>4, slow ramp hurts video_ts; E_R5=0.6108 < E_R4b=0.6132)'.format(
-            args.warmup_epoch))
-
     description = dataloaders.description
     thresholds  = compute_duration_thresholds(
         dataloaders['train'],
@@ -1411,7 +1188,7 @@ if __name__ == '__main__':
         hidden_dim=getattr(args, 'debias_hidden_dim', 64),
         lambda_init=lambda_init,
         hidden_dim_base=hidden_dim_base,
-        hard_routing=getattr(args, 'hard_routing', False),
+        hard_routing=getattr(args, 'hard_routing', True),
         use_bucket_emb=not getattr(args, 'no_bucket_emb', False),
         bucket_mean_proxy=compute_bucket_mean_proxy(
             dataloaders['train'], None, thresholds, device
@@ -1422,10 +1199,7 @@ if __name__ == '__main__':
         aux_target_names=aux_target_names,
     ).to(device)
 
-    # §4.2 anchor: wire --disable_lambda_adapter and --disable_proxy_features
-    debias_net.disable_lambda_adapter = getattr(args, 'disable_lambda_adapter', False)
-    if debias_net.disable_lambda_adapter:
-        print('Ablation: --disable_lambda_adapter=True, get_lambda_per_sample skips adapter')
+    # Optional proxy-feature ablation.
     debias_net.disable_proxy_features = getattr(args, 'disable_proxy_features', False)
     if debias_net.disable_proxy_features:
         print('Ablation: --disable_proxy_features=True, f9/f10/f11 dropped from debias input')
