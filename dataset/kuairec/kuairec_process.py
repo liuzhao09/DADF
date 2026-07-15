@@ -2,25 +2,25 @@ import pandas as pd
 import numpy as np
 import pickle
 
-with open("row_data/kuairec_caption_category.csv", "r", encoding="utf-8", errors="ignore") as f:
+with open("raw_data/kuairec_caption_category.csv", "r", encoding="utf-8", errors="ignore") as f:
     lines = f.readlines()
 
-with open("row_data/cleaned_kuairec_caption_category.csv", "w", encoding="utf-8") as f:
+with open("raw_data/cleaned_kuairec_caption_category.csv", "w", encoding="utf-8") as f:
     f.writelines(lines)
 
-df5 = pd.read_csv("row_data/cleaned_kuairec_caption_category.csv", encoding="utf-8")
+df5 = pd.read_csv("raw_data/cleaned_kuairec_caption_category.csv", encoding="utf-8")
 df5["video_id"] = pd.to_numeric(df5["video_id"], errors="coerce")
 df5 = df5.dropna(subset=["video_id"])
 df5["video_id"] = df5["video_id"].astype(int)
-df5.to_csv("row_data/cleaned_kuairec_caption_category.csv", index=False, encoding="utf-8")
+df5.to_csv("raw_data/cleaned_kuairec_caption_category.csv", index=False, encoding="utf-8")
 
 #join feature files to one file
-df1 = pd.read_csv("row_data/big_matrix.csv")
-df2 = pd.read_csv("row_data/user_features.csv")
-df3 = pd.read_csv("row_data/item_daily_features.csv").loc[:, ['video_id', 'video_type','music_id','video_tag_id']]
+df1 = pd.read_csv("raw_data/big_matrix.csv")
+df2 = pd.read_csv("raw_data/user_features.csv")
+df3 = pd.read_csv("raw_data/item_daily_features.csv").loc[:, ['video_id', 'video_type','music_id','video_tag_id']]
 df3 = df3.drop_duplicates(subset=['video_id'])
-df4 = pd.read_csv("row_data/item_categories.csv")
-df5 = pd.read_csv("row_data/cleaned_kuairec_caption_category.csv", encoding="utf-8").loc[:,['video_id', 'first_level_category_id', 'second_level_category_id', 'third_level_category_id']]
+df4 = pd.read_csv("raw_data/item_categories.csv")
+df5 = pd.read_csv("raw_data/cleaned_kuairec_caption_category.csv", encoding="utf-8").loc[:,['video_id', 'first_level_category_id', 'second_level_category_id', 'third_level_category_id']]
 
 df_merged_1_2 = pd.merge(df1, df2, on="user_id", how="left")
 df_merged_1_2_3 = pd.merge(df_merged_1_2, df3, on="video_id", how="left")
@@ -34,7 +34,7 @@ df = df[df['video_type'] != 'AD']
 df = df[df['play_duration'] > 0]
 df = df[df['video_duration'] > 0]
 
-# 全量打散（vocab 和 normalization 都基于全量建，保证两份 pkl 特征维度一致）
+# 固定种子打散。特征词表跨划分共享，标签统计在 split 后仅由训练集计算。
 df = df.sample(frac=1.0, random_state=312).reset_index(drop=True)
 
 #delete unnecessary features
@@ -172,7 +172,7 @@ with open('./kuairec_data_full.pkl', 'wb+') as f:
 print("saved kuairec_data_full.pkl  train={} val={} test={}".format(len(df_train_full), len(df_val_full), len(df_test_full)))
 
 # ── 10% 采样版：完全独立计算所有统计量（无穿越）────────────────────────────────
-# 从 split 前的全量 df 抽取 10%，先做 80/20 split，再从 10pct train 独立算 max_val 和 bins
+# 从 split 前的全量 df 抽取 10%，再做 80/10/10 split，并仅由 10pct train 计算统计量
 # 两份 pkl 的 description / play_duration_max / bins 各自独立（允许微小差异）
 df_10pct          = df.sample(frac=0.1, random_state=312).reset_index(drop=True)
 df_10pct          = df_10pct.sample(frac=1, random_state=1234).reset_index(drop=True)

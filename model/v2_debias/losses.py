@@ -8,14 +8,14 @@ from .transforms import duration_to_onehot
 
 
 def normal_regularization_loss(x_trans, duration, thresholds, weight_valid,
-                               bucket_freq=None, eps=1e-8):
+                               bucket_freq=None, kurtosis_weight=0.0, eps=1e-8):
     """
     正态化正则 loss：强制各 bucket 内 Box-Cox 变换后的值分布
-    均值 → 0，方差 → 1，偏度 → 0，峰度 → 3（正态峰度）
-    参照 tf_graph.py: normal_regularization_loss，增加峰度项
+    均值 → 0，方差 → 1，偏度 → 0。
+    参照 tf_graph.py: normal_regularization_loss。
 
     各项权重（与 tf_graph.py 一致）：均值 1.0，方差 0.8，偏度 0.6
-    增加：超额峰度 0.3（约束 excess_kurtosis → 0，即 kurtosis → 3）
+    kurtosis_weight > 0 时可显式加入超额峰度实验项，默认关闭。
     分母动态 = len(thresholds) + 1（支持 3 或 4 个时长 bucket）
     var 使用 unbiased=False（匹配 TF reduce_variance / N）
 
@@ -63,16 +63,14 @@ def normal_regularization_loss(x_trans, duration, thresholds, weight_valid,
         std      = var.sqrt()
         centered = x_group - mean
         skewness = centered.pow(3).mean() / (std.pow(3) + eps)
-        # 超额峰度：N(0,1) 的峰度为 3，excess_kurtosis → 0
-        kurtosis      = centered.pow(4).mean() / (var.pow(2) + eps)
-        excess_kurt   = kurtosis - 3.0
-
         bucket_nr = (
             1.0 * mean.pow(2)
             + 0.8 * (var - 1.0).pow(2)
             + 0.6 * skewness.abs()
-            + 0.3 * excess_kurt.abs()   # 新增峰度约束
         )
+        if kurtosis_weight > 0.0:
+            kurtosis = centered.pow(4).mean() / (var.pow(2) + eps)
+            bucket_nr = bucket_nr + kurtosis_weight * (kurtosis - 3.0).abs()
         w = bw[i] if bucket_freq is None else bw[i]
         reg_loss = reg_loss + w * bucket_nr
 

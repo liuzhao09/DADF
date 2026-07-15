@@ -4,12 +4,10 @@ DebiasNetV2：Box-Cox 变换 + 时长感知分桶专家网络
 这是与论文方法对齐的公开参考实现，并非完整线上生产代码。生产系统中的
 特征工程、基础多任务塔与服务优化不包含在本仓库中。
 
-与原版的主要差异（离线简化版）：
-  - 默认无多任务辅助 logit（原版用 fpr/svr/lvr/evr 等 8 个任务的
-    logit × 8 种变换 × attention）
-  - 默认用 base_pred → logit 空间 → 8 种非线性变换替代
-  - 可选启用 watch-time auxiliary heads（svr/fpr/evr/lvr/evr_p60/lvr_p80/lvr_p90）
-  - 时长 bucket 阈值由离线配置决定（原版硬编码 18/32/120s）
+公开实现使用可复现的 watch-time auxiliary heads
+（svr/fpr/evr/lvr/evr_p60/lvr_p80/lvr_p90）。各 head 的 logit 经固定
+非线性展开后，与 tower representation 和共享 correction context 拼接，
+再由 MLP 融合。时长 bucket 阈值由离线配置决定。
 """
 
 import numpy as np
@@ -35,10 +33,11 @@ class DebiasNetV2(nn.Module):
     输出: [B, 1]，Box-Cox 空间的纠偏因子预测值
 
     整体结构：
-      [nonlinear(8), duration(1), user_emb, video_emb]
-        → input_mlp (128 → 64)
-        → bucket_num 个 bucket 专家头各出 [B, 1]
-        → duration one-hot 加权选择
+      [base nonlinear/proxy features, base hidden, duration/user/video embeddings]
+        → shared context MLP
+        → auxiliary heads and fixed logit expansion
+        → concatenation + fusion MLP
+        → duration-group experts selected by hard one-hot routing
     """
 
     def __init__(self, user_vocab_size, video_vocab_size,
@@ -225,9 +224,9 @@ class DebiasNetV2(nn.Module):
         gate_logits = self.gate_mlp(duration)                  # [B, bucket_num]
         return torch.softmax(gate_logits / temperature, dim=1) # [B, bucket_num]
 
-    def get_lambda_per_sample(self, duration, thresholds):
+    def get_routed_lambda(self, duration, thresholds):
         """
-        根据论文定义的时长 bucket 为每个样本选取组级 λ，返回 [B, 1]。
+        按 duration bucket 路由到组级 λ_g，返回 [B, 1]。
         默认 hard one-hot；soft-routing 消融时使用相同 gate 权重。
         """
         routing_w      = self._routing_weights(duration, thresholds)      # [B, bucket_num]
@@ -259,7 +258,7 @@ class DebiasNetV2(nn.Module):
         base_pred   : [B, 1] sigmoid-like，调用处先 .detach()
         duration    : [B, 1] float，归一化时长
         base_hidden : [B, hidden_dim_base] float，base model 最后隐层（可选）
-                      WD 系列（VR/WLR/D2CO）传入 32-dim hidden；其他模型传 None
+                      支持的 WD/EGMN 系列传入 64-dim hidden；其他模型传 None
         proxy       : [B, 1] float，base model 的 watch-time 代理值（可选）
                       传入时激活 log(proxy) 和 log(proxy/duration) 两个增量特征
         return      : [B, 1] Box-Cox 空间预测值

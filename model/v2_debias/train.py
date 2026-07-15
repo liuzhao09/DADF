@@ -1,8 +1,8 @@
 """
-V2 Debias 框架训练脚本（联合训练版）
+V2 Debias 框架训练脚本
 对齐 online_code/tf_graph.py vtr_debias_aware scope
 
-本项目方法：Box-Cox 变换 + 时长感知分桶专家 + 联合训练
+本项目方法：Box-Cox 变换 + 时长感知分桶专家
 
 两层架构:
   Layer 1: 基础模型（--base_model wd/egmn）
@@ -10,7 +10,8 @@ V2 Debias 框架训练脚本（联合训练版）
 
 训练流程:
   Warmup（warmup_epoch 轮）: 仅 base_loss → proxy 先收敛
-  联合（epoch 轮）         : base_loss + debias_losses，对应 tf_graph.py total_loss
+  Correction（epoch 轮）   : 默认冻结 base，仅优化论文中的四项 DADF objective
+  --joint_finetune_base 仅用于显式消融
 
 运行方式（从项目根目录）:
   python model/v2_debias/train.py --base_model wd   --device cuda:0
@@ -58,7 +59,7 @@ DEFAULT_WATCH_AUX_TARGETS = (
 
 def get_args():
     parser = argparse.ArgumentParser(
-        description='V2 Debias 框架（联合训练，Box-Cox + 分桶专家）'
+        description='V2 Debias 框架（Box-Cox + 时长分桶专家）'
     )
     parser.add_argument('--base_model',   default='wlr',
                         choices=list_supported_models(),
@@ -84,7 +85,7 @@ def get_args():
     parser.add_argument('--weight_decay', type=float, default=1e-6)
 
     parser.add_argument('--abs_time_weight', type=float, default=0.8)
-    parser.add_argument('--nr_weight',       type=float, default=1.0)
+    parser.add_argument('--nr_weight',       type=float, default=0.05)
     parser.add_argument('--huber_delta',     type=float, default=0.2,
                         help='abs_predtime_loss Huber delta（[0,1] 归一化空间，0.2=20%%范围内L2，超出L1；线上等效是纯MSE，此处有意引入L1保护）')
 
@@ -116,11 +117,10 @@ def get_args():
                         help='禁用 base model hidden layer 输入（ablation：验证 base_hidden 贡献）')
     parser.add_argument('--no_data_lambda', action='store_true',
                         help='禁用数据驱动 lambda 初始化，回退到默认 0.1（ablation：验证 lambda_init 贡献）')
-    parser.add_argument('--no_gradual_warmup', action='store_true',
-                        help='禁用渐变 warmup（alpha 始终 1.0）；EGMN 实验证明 gradual warmup 很重要')
-    parser.add_argument('--no_auto_debias', action='store_true',
-                        help='禁用 KuaiRec+EGMN/D2Q 的 auto-config 覆盖（ablation：强制使用 CLI 原始超参，'
-                             '不被 Phase 9 等最优 auto-settings 覆盖）；对 WeChat21 无作用（auto-config 分支仅限 kuairec）')
+    parser.add_argument('--gradual_warmup', action='store_true',
+                        help='实验选项：在联合训练开始后逐步增加 DADF loss 权重；默认 alpha=1')
+    parser.add_argument('--backbone_autotune', action='store_true',
+                        help='实验选项：启用针对特定 backbone 的自动超参数覆盖；默认关闭')
     # ── Debias architecture flags ────────────────────────────────────────────
     parser.add_argument('--no_bucket_emb', action='store_true',
                         help='禁用时长 bucket embedding，退回标量 duration 输入')
@@ -131,14 +131,17 @@ def get_args():
     parser.add_argument('--share_base_emb', action='store_true',
                         help='共享 base model 的 user/video embedding（WD 系列专用；无需额外训练，'
                              '减少稀疏数据下的过拟合）')
-    parser.add_argument('--use_aux_targets', action='store_true',
+    parser.add_argument('--use_aux_targets', dest='use_aux_targets', action='store_true',
+                        default=True,
                         help='启用由 play_time/duration 构造的 watch-time 辅助目标，'
                              '并将其 logits 注入 debias head（近似线上 multi-label aware）')
+    parser.add_argument('--no_aux_targets', dest='use_aux_targets', action='store_false',
+                        help='禁用辅助目标与 multi-label-aware 表征（消融）')
     parser.add_argument('--aux_targets', type=str,
                         default=','.join(DEFAULT_WATCH_AUX_TARGETS),
                         help='逗号分隔的辅助目标子集，可选: {}'
                              .format(','.join(DEFAULT_WATCH_AUX_TARGETS)))
-    parser.add_argument('--aux_target_weight', type=float, default=0.05,
+    parser.add_argument('--aux_target_weight', type=float, default=0.10,
                         help='辅助目标 BCE loss 权重；各辅助目标 BCE 先求均值，再乘该权重')
     parser.add_argument('--two_stage_debias', action='store_true',
                         help='两阶段纠偏：warmup后用MLE Box-Cox拟合每桶lambda初始化，debias_net从更好起点学习（替代旧BMF方案）')
@@ -147,10 +150,11 @@ def get_args():
     parser.add_argument('--confidence_weighted_loss', action='store_true',
                         help='置信度加权 BC 损失（EGMN专用）：不确定样本降权，使纠偏更专注可靠信号')
     parser.add_argument('--debias_bucket_num', type=int, default=4,
-                        help='纠偏网络分桶数（默认4桶=6s/10s/18s；8桶=3s/6s/10s/18s/30s/60s/120s）')
+                        help='纠偏网络的时长专家数；阈值由 duration_thresh_mode 决定')
     parser.add_argument('--duration_thresh_mode',
-                        choices=['auto', 'physical', 'quantile'], default='auto',
-                        help='分桶阈值计算策略。auto=现行行为（K∈白名单走 physical，其他 quantile）；'
+                        choices=['auto', 'physical', 'quantile'], default='quantile',
+                        help='分桶阈值计算策略。quantile=论文默认的等频分桶；'
+                             'auto=K∈白名单走 physical，其他 quantile；'
                              'physical=强制 _PHYS_BUCKET_TABLE 白名单（K 不在表里会报错）；'
                              'quantile=跳过 physical 表强制走 np.quantile fallback。'
                              'K=1 无论哪种 mode 都是空 thresholds（global Box-Cox）。')
@@ -169,8 +173,14 @@ def get_args():
                              '1.1=最多允许 10%% 修正；D2Q final_clip 实验（D_R5）')
     parser.add_argument('--final_debias_factor_min', type=float, default=None,
                         help='最终因子下界（default None=不裁剪）')
-    parser.add_argument('--nr_pred_weight', type=float, default=-1.0,
-                        help='预测侧 NR loss 权重（default -1.0=使用 0.05×nr_weight；>0 独立控制）')
+    parser.add_argument('--nr_pred_weight', type=float, default=0.0,
+                        help='实验选项：预测侧 NR loss 权重（默认 0，与论文目标一致）')
+    parser.add_argument('--lambda_smooth_weight', type=float, default=0.0,
+                        help='实验选项：相邻 duration bucket 的 lambda 平滑权重（默认 0）')
+    parser.add_argument('--kurtosis_weight', type=float, default=0.0,
+                        help='实验选项：L_reg 中的超额峰度权重（默认 0）')
+    parser.add_argument('--bucket_reweighting', action='store_true',
+                        help='实验选项：按 duration bucket 的 CV/sqrt(freq) 重加权（默认关闭）')
     parser.add_argument('--disable_proxy_features', action='store_true',
                         help='§4.2 anchor ablation: drop f9/f10/f11 proxy-distribution features '
                              'from debias net input (log(proxy), log(proxy/dur), log(proxy/bucket_mean))')
@@ -593,7 +603,7 @@ def test(args, adapter, debias_net, dataloaders, thresholds, bucket_json_path=No
                 proxy=proxy,
                 uncertainty=uncertainty,
             )
-            lambda_tensor = debias_net.get_lambda_per_sample(duration, thresholds)
+            lambda_tensor = debias_net.get_routed_lambda(duration, thresholds)
             _dfmin = getattr(args, 'debias_factor_min', 0.1)
             _dfmax = getattr(args, 'debias_factor_max', 10.0)
             debias_factor = boxcox_inverse(
@@ -639,11 +649,11 @@ def train_joint(args, adapter, debias_net, dataloader_train, thresholds, dataloa
     联合训练，对齐 tf_graph.py 的 total_loss 设计。
 
     Warmup（warmup_epoch 轮）: loss = base_loss
-    联合（epoch 轮）:
-      loss = base_loss
-           + debias_trans_loss        (Box-Cox 空间 MSE)
-           + abs_time_weight * abs_predtime_loss  (Huber)
-           + nr_weight * nr_loss      (正态化正则)
+    纠偏（epoch 轮，默认冻结 base）:
+      loss = debias_trans_loss                       (Box-Cox 空间 MSE)
+           + abs_time_weight * abs_predtime_loss     (Huber)
+           + nr_weight * nr_loss                     (矩正则)
+           + aux_target_weight * aux_loss            (辅助 BCE)
 
     stop_gradient: p.detach() 传入 debias_net（阻断 debias_loss 流回 base 表示层）
     含 early stopping（patience 轮 final XAUC 不提升则停止）
@@ -659,7 +669,7 @@ def train_joint(args, adapter, debias_net, dataloader_train, thresholds, dataloa
         {'params': _debias_params,       'lr': args.debias_lr * args.debias_lr_scale},
     ], weight_decay=args.weight_decay)
 
-    # CV-weighted bucket loss：权重 = CV × 1/sqrt(freq)
+    # 仅为显式 bucket_reweighting 实验估计 CV/frequency 权重。
     # CV（变异系数）= 该桶内 play_time 的标准差 / 均值，衡量"该桶的 debias 修正空间大小"
     # 数据分析：KuaiRec B3(18s+) CV=1.647 >> B0(0-6s) CV=0.653
     # 当前 1/sqrt(freq) 只考虑频率不平衡，忽略了 B3 信号最强的事实
@@ -684,12 +694,18 @@ def train_joint(args, adapter, debias_net, dataloader_train, thresholds, dataloa
     bucket_mean = bucket_pt_sum    / bucket_counts.clamp(min=1.0)
     bucket_var  = bucket_pt_sq_sum / bucket_counts.clamp(min=1.0) - bucket_mean.pow(2)
     bucket_cv   = bucket_var.clamp(min=0.0).sqrt() / bucket_mean.clamp(min=1e-8)
-    # Final weight: CV × 1/sqrt(freq), normalized to mean=1
-    bucket_weight = bucket_cv / bucket_freq.sqrt().clamp(min=1e-3)
-    bucket_weight = bucket_weight / bucket_weight.mean()
+    # The manuscript default gives every valid sample and duration group equal
+    # weight. CV/frequency weighting is retained only as an explicit experiment.
+    if getattr(args, 'bucket_reweighting', False):
+        bucket_weight = bucket_cv / bucket_freq.sqrt().clamp(min=1e-3)
+        bucket_weight = bucket_weight / bucket_weight.mean()
+        reg_bucket_freq = bucket_freq
+    else:
+        bucket_weight = torch.ones_like(bucket_freq)
+        reg_bucket_freq = None
     print('Bucket frequencies: {}'.format(['{:.3f}'.format(f.item()) for f in bucket_freq]))
     print('Bucket CV (play_time std/mean): {}'.format(['{:.3f}'.format(c.item()) for c in bucket_cv]))
-    print('Bucket weights (CV/sqrt(freq)): {}'.format(['{:.3f}'.format(w.item()) for w in bucket_weight]))
+    print('Bucket sample weights: {}'.format(['{:.3f}'.format(w.item()) for w in bucket_weight]))
 
     total_epochs = args.warmup_epoch + args.epoch
     best_xauc    = -1.0
@@ -751,7 +767,7 @@ def train_joint(args, adapter, debias_net, dataloader_train, thresholds, dataloa
                     p, proxy, base_hidden = adapter.get_base_pred_and_hidden(features)
 
                 debias_factor_v2   = play_time / proxy
-                lambda_tensor      = debias_net.get_lambda_per_sample(duration, thresholds)
+                lambda_tensor      = debias_net.get_routed_lambda(duration, thresholds)
                 debias_trans_label = boxcox_transform(debias_factor_v2, lambda_tensor)
 
                 mask_label_valid  = (debias_trans_label >= -6.0) & (debias_trans_label <= 6.0)
@@ -774,13 +790,6 @@ def train_joint(args, adapter, debias_net, dataloader_train, thresholds, dataloa
                         conf = adapter.get_mixture_confidence(features)  # [B, 1]
                     weight_tight_balanced = weight_tight_balanced * conf
                     weight_valid_balanced = weight_valid_balanced * conf
-
-                _uam = getattr(args, 'user_active_multiplier', None)
-                if _uam is not None and 'user_active_degree' in features:
-                    uam_tensor = torch.tensor(_uam, dtype=torch.float32, device=duration.device)
-                    ua_degree = features['user_active_degree'].view(-1).clamp(0, len(uam_tensor)-1)
-                    ua_mult = uam_tensor[ua_degree].view(-1, 1)
-                    weight_tight_balanced = weight_tight_balanced * ua_mult
 
                 # label-debias 高价值样本上采样：w = 1 + coeff * (play_time / batch_max)
                 _ldw = getattr(args, 'label_debias_weight', 0.0)
@@ -828,15 +837,17 @@ def train_joint(args, adapter, debias_net, dataloader_train, thresholds, dataloa
 
                 nr_loss = normal_regularization_loss(
                     debias_trans_label, duration, thresholds, weight_valid_balanced,
-                    bucket_freq=bucket_freq,
+                    bucket_freq=reg_bucket_freq,
+                    kurtosis_weight=args.kurtosis_weight,
                 )
-                # pred-side NR（小权重）：约束网络输出分布接近 N(0,1)
-                # 保留 label-side NR 作为 λ 校准，额外加一项对预测值的软约束
-                # weight=0.05*nr_weight 远小于 label-side，防止两者语义混淆
-                nr_pred_loss = normal_regularization_loss(
-                    debias_v2_output, duration, thresholds, weight_valid_balanced,
-                    bucket_freq=bucket_freq,
-                )
+                if args.nr_pred_weight > 0.0:
+                    nr_pred_loss = normal_regularization_loss(
+                        debias_v2_output, duration, thresholds, weight_valid_balanced,
+                        bucket_freq=reg_bucket_freq,
+                        kurtosis_weight=args.kurtosis_weight,
+                    )
+                else:
+                    nr_pred_loss = torch.tensor(0.0, device=play_time.device)
 
                 if use_aux_targets:
                     aux_labels = build_watch_aux_labels(
@@ -856,31 +867,35 @@ def train_joint(args, adapter, debias_net, dataloader_train, thresholds, dataloa
                 else:
                     aux_loss = torch.tensor(0.0, device=play_time.device)
 
-                # Lambda 平滑正则：相邻 bucket 的 λ 差异不应突变（暴露偏差在时长维度连续变化）
-                lambda_c = torch.clamp(debias_net.lambda_params, -1.0, 1.0)
-                lambda_smooth_loss = (lambda_c[1:] - lambda_c[:-1]).pow(2).mean() if lambda_c.shape[0] > 1 else torch.tensor(0.0, device=lambda_c.device)
+                if args.lambda_smooth_weight > 0.0:
+                    lambda_c = torch.clamp(debias_net.lambda_params, -1.0, 1.0)
+                    lambda_smooth_loss = (
+                        (lambda_c[1:] - lambda_c[:-1]).pow(2).mean()
+                        if lambda_c.shape[0] > 1
+                        else torch.tensor(0.0, device=lambda_c.device)
+                    )
+                else:
+                    lambda_smooth_loss = torch.tensor(0.0, device=play_time.device)
 
                 # 渐变 warmup：在前 warmup_epoch 内 debias loss 线性从 0 增长到 1
                 # 让 debias head 缓慢进入联合训练，避免突变引起训练不稳
                 # EGMN 实验验证：gradual warmup 对提升效果至关重要（+0.008 vs +0.004 无 warmup）
-                if getattr(args, 'no_gradual_warmup', False):
-                    alpha = getattr(args, 'alpha_max', 1.0)
-                else:
+                if getattr(args, 'gradual_warmup', False):
                     joint_epoch = epoch - args.warmup_epoch
                     _alpha_max  = getattr(args, 'alpha_max', 1.0)
                     alpha = min(_alpha_max, joint_epoch / max(args.warmup_epoch, 1))
+                else:
+                    alpha = 1.0
 
-                _nr_pred_w = getattr(args, 'nr_pred_weight', -1.0)
-                _nr_pred_w = args.nr_weight * 0.05 if _nr_pred_w < 0 else _nr_pred_w
                 debias_loss = alpha * (
                     debias_trans_loss
                     + args.abs_time_weight * abs_predtime_loss
                     + args.nr_weight       * nr_loss
-                    + _nr_pred_w           * nr_pred_loss
+                    + args.nr_pred_weight  * nr_pred_loss
                     + args.aux_target_weight * aux_loss
-                    + 0.01 * lambda_smooth_loss
+                    + args.lambda_smooth_weight * lambda_smooth_loss
                 )
-                loss          = base_loss + debias_loss
+                loss = debias_loss if args.freeze_base else base_loss + debias_loss
                 epoch_debias += debias_loss.item()
                 epoch_aux += aux_loss.item()
 
@@ -971,14 +986,15 @@ if __name__ == '__main__':
         raise ValueError('--use_aux_targets is set but --aux_targets is empty')
     if args.use_aux_targets:
         print('Watch-time auxiliary targets enabled: {}'.format(', '.join(aux_target_names)))
-    if getattr(args, 'full_data', False) and args.patience == 5:
+    _autotune = getattr(args, 'backbone_autotune', False)
+    if _autotune and getattr(args, 'full_data', False) and args.patience == 5:
         args.patience = 6  # full data debias_v2: 每 epoch 长，patience=6 防过早停止（跨规模实验结论）
         print('full_data: patience auto-set to 6 (longer epochs, prevent premature stop)')
-    if args.base_model == 'wlr' and args.epoch == 30:
+    if _autotune and args.base_model == 'wlr' and args.epoch == 30:
         args.epoch = 50   # wlr converges slower, needs more epochs
     # KuaiRec：lambda 由 tf_graph.py 专门调优，BC 分布已接近正态，过强 NR 约束反而阻碍修正
     # 两阶段纠偏后残差 BC 更接近正态，NR 约束可进一步降低；实验：two_stage+nr=0.05 > nr=0.1
-    if args.dataset_name == 'kuairec' and args.nr_weight == 1.0:
+    if _autotune and args.dataset_name == 'kuairec' and args.nr_weight == 1.0:
         if getattr(args, 'two_stage_debias', False):
             args.nr_weight = 0.05
             print('KuaiRec+two_stage: nr_weight auto-set to 0.05 (residual BC more normal; ablation: 0.05 > 0.1)')
@@ -987,45 +1003,43 @@ if __name__ == '__main__':
             print('KuaiRec: nr_weight auto-set to 0.1 (lambda pre-tuned; ablation: 0.1 > 0.3 > 1.0 on XAUC)')
     # WeChat21：play_time 单位与 KuaiRec 相同（ms 归一化），BC 分布特性类似。
     # nr_weight=1.0 同样会使 NR 正则项远超回归损失，用 0.1 重新平衡（与 KuaiRec 一致）
-    if args.dataset_name == 'wechat21' and args.nr_weight == 1.0:
+    if _autotune and args.dataset_name == 'wechat21' and args.nr_weight == 1.0:
         args.nr_weight = 0.1
         print('WeChat21: nr_weight auto-set to 0.1 (same BC distribution as KuaiRec; default 1.0 overwhelms regression)')
     # KuaiRec debias_lr：WD 系列（vr/wlr/wd/d2co）从 0.02 > 0.01，分布类模型（egmn 等）反之
     # iter-9 WLR lr=0.02: ΔXAUC +0.027；EGMN lr=0.02: ΔXAUC +0.0045（退步）
     _wd_models = ('vr', 'wlr', 'wd', 'd2co')
-    if args.dataset_name == 'kuairec' and args.base_model in _wd_models and args.debias_lr == 0.01:
+    if (_autotune and args.dataset_name == 'kuairec'
+            and args.base_model in _wd_models and args.debias_lr == 0.01):
         args.debias_lr = 0.02
         print('KuaiRec {}: debias_lr auto-set to 0.02 (WD proxy benefits from faster debias convergence)'.format(args.base_model))
     # KuaiRec patience：扩大到 6 给 debias_net 更多收敛时间（default 5 可能过早停止）
-    if args.dataset_name == 'kuairec' and args.patience == 5:
+    if _autotune and args.dataset_name == 'kuairec' and args.patience == 5:
         args.patience = 6
         print('KuaiRec: patience auto-set to 6 (debias_net with lr=0.02 needs more epochs to plateau)')
     # KuaiRec+EGMN: epoch=15 + patience=10 — 30轮实验最优配置 (2026-04-20)
     # E_P3_1 (ep=15, seed=42): XAUC=0.6145 (best); 3-seed avg=0.6131±0.0014
     # ep=20 overfits (0.6127 < 0.6145); ep=12 sufficient but suboptimal
     # patience=10 prevents early stop before ep=15 peak (default 6 → may stop at ep=10)
-    if (args.dataset_name == 'kuairec' and args.base_model == 'egmn'
+    if (_autotune and args.dataset_name == 'kuairec' and args.base_model == 'egmn'
             and args.epoch == 30 and args.patience == 6):
         args.epoch = 12
         args.patience = 8
         print('KuaiRec+EGMN: epoch auto-set to 12, patience to 8')
-    if (args.dataset_name == 'kuairec' and args.base_model == 'egmn'
-            and getattr(args, 'label_debias_weight', 0.0) == 0.0
-            and not getattr(args, 'no_auto_debias', False)):
+    if (_autotune and args.dataset_name == 'kuairec' and args.base_model == 'egmn'
+            and getattr(args, 'label_debias_weight', 0.0) == 0.0):
         args.label_debias_weight = 3.0
         print('KuaiRec+EGMN: label_debias_weight auto-set to 3.0')
-    # --no_auto_debias flag：禁用所有 EGMN/D2Q 的 debias 自动配置（消融实验用）
-    _no_auto = getattr(args, 'no_auto_debias', False)
     # KuaiRec+EGMN debias_lr=0.0001：更慢的 debias 学习率（Phase 9 val-split 跨 seed 验证）
     # seed=0:  baseline XAUC=0.6036 MAE=4.238 → lr=1e-4 XAUC=0.6128 MAE=4.086 (+0.0092/-0.152)
     # seed=42: baseline XAUC=0.6002 MAE=4.236 → lr=1e-4 XAUC=0.6094 MAE=4.074 (+0.0092/-0.162)
     # 两 seed Δ 完全一致 +0.0092 XAUC，稳定 MAE↓ + XAUC↑ 双赢
-    if (not _no_auto and args.dataset_name == 'kuairec' and args.base_model == 'egmn'
+    if (_autotune and args.dataset_name == 'kuairec' and args.base_model == 'egmn'
             and args.debias_lr == 0.01):
         args.debias_lr = 0.0001
         print('KuaiRec+EGMN: debias_lr auto-set to 0.0001 (Phase 9 cross-seed verified: XAUC +0.0092, MAE -0.155 on seeds 0/42)')
     # KuaiRec+EGMN：启用论文中的 per-bucket Box-Cox 初始化流程
-    if (not _no_auto and args.dataset_name == 'kuairec' and args.base_model == 'egmn'
+    if (_autotune and args.dataset_name == 'kuairec' and args.base_model == 'egmn'
             and not getattr(args, 'two_stage_debias', False)):
         args.two_stage_debias = True
         print('KuaiRec+EGMN: two_stage_debias auto-set to True')
@@ -1035,7 +1049,7 @@ if __name__ == '__main__':
     #   Mechanism: high-confidence EGMN predictions get more debias gradient →
     #   reduces correction-stage oscillation on the internal ablation runs
     #   Note: slightly reduces base XAUC (0.6117 vs E_R4a 0.6126) but improves final debias XAUC
-    if (not _no_auto and args.dataset_name == 'kuairec' and args.base_model == 'egmn'
+    if (_autotune and args.dataset_name == 'kuairec' and args.base_model == 'egmn'
             and not getattr(args, 'confidence_weighted_loss', False)):
         args.confidence_weighted_loss = True
         print('KuaiRec+EGMN: confidence_weighted_loss auto-set')
@@ -1045,7 +1059,7 @@ if __name__ == '__main__':
     # Phase 13 F13_5 最优组合：lr=0.01, ldw=0, alpha_max=0.15, clip=[0.97,1.03]
     #   → base MAE 4.112→final 4.106 (-0.006, ✅ MAE 下降)
     #   → base XAUC 0.6136→final 0.6137 (+0.0001, ✅ XAUC 微升)
-    if (not _no_auto and getattr(args, 'full_data', False)
+    if (_autotune and getattr(args, 'full_data', False)
             and args.dataset_name == 'kuairec' and args.base_model == 'egmn'):
         args.debias_lr = 0.01             # 覆盖 10pct 的 0.0001（Adagrad 饿死）
         args.label_debias_weight = 0.0    # 覆盖 10pct 的 3.0（full 信号足，不需加权）
@@ -1058,11 +1072,11 @@ if __name__ == '__main__':
     # ═══════════════════════════════════════════════════════════════════════════
     # KuaiRec+D2Q 最优配置：two_stage_debias + debias_lr=0.001
     # 实验(10%): two_stage+lr=0.001 XAUC=0.6131 > 旧默认0.6124（+0.0007）
-    if (not _no_auto and args.dataset_name == 'kuairec' and args.base_model == 'd2q'
+    if (_autotune and args.dataset_name == 'kuairec' and args.base_model == 'd2q'
             and not getattr(args, 'two_stage_debias', False)):
         args.two_stage_debias = True
         print('KuaiRec+D2Q: two_stage_debias auto-set to True')
-    if (not _no_auto and args.dataset_name == 'kuairec' and args.base_model == 'd2q'
+    if (_autotune and args.dataset_name == 'kuairec' and args.base_model == 'd2q'
             and args.debias_lr == 0.01):
         args.debias_lr = 0.001
         print('KuaiRec+D2Q: debias_lr auto-set to 0.001 (two_stage+lr=0.001: XAUC=0.6131 > 0.6124)')
@@ -1080,16 +1094,16 @@ if __name__ == '__main__':
     # Mechanism: alpha=0.3 cap ensures: 70% gradient for base, 30% for debias,
     # preventing both proxy disruption AND base model degradation
     # Note: Phase 7 N_R4 发现: final_clip=[0.98,1.02] → XAUC=0.6141 > baseline 0.6137! (单seed=42)
-    if (not _no_auto and args.dataset_name == 'kuairec' and args.base_model == 'd2q'
+    if (_autotune and args.dataset_name == 'kuairec' and args.base_model == 'd2q'
             and getattr(args, 'alpha_max', 1.0) == 1.0
-            and not getattr(args, 'no_gradual_warmup', False)):
+            and getattr(args, 'gradual_warmup', False)):
         args.alpha_max = 0.3
         print('KuaiRec+D2Q: alpha_max auto-set to 0.3 (conservative debias preserves D2Q proxy XAUC)')
     # KuaiRec+D2Q: final_debias_factor=[0.98, 1.02] — 推理时修正幅度限制至±2%
     # Phase 7 N_R4 发现（2026-04-21）: clip=[0.98,1.02] → XAUC=0.6141 > baseline 0.6137
     # 机制：ep4时debias_net随机初始化+clip截断大修正→近似base XAUC(0.6135+微弱有益修正)
     # 已验证：seed=42(XAUC=0.6141) + seed=123(XAUC=0.6138) 均 > baseline 0.6137
-    if (not _no_auto and args.dataset_name == 'kuairec' and args.base_model == 'd2q'
+    if (_autotune and args.dataset_name == 'kuairec' and args.base_model == 'd2q'
             and getattr(args, 'final_debias_factor_max', None) is None):
         args.final_debias_factor_max = 1.02
         args.final_debias_factor_min = 0.98
@@ -1204,7 +1218,7 @@ if __name__ == '__main__':
     if debias_net.disable_proxy_features:
         print('Ablation: --disable_proxy_features=True, f9/f10/f11 dropped from debias input')
 
-    # 联合训练（warmup → joint with early stopping）
+    # 两阶段训练（base warmup → correction；base 默认冻结）
     train_joint(args, adapter, debias_net, dataloaders['train'], thresholds, dataloaders)
 
     # 消融评估（base only）

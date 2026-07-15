@@ -115,15 +115,41 @@ def eval_mae(labels, scores, scale=1.0):
 
 
 def eval_xauc(labels, pres):
-    label_preds = zip(labels.reshape(-1), pres.reshape(-1))
-    sorted_label_preds = sorted(label_preds, key=lambda lc: lc[1], reverse=True)
-    label_preds_len = len(sorted_label_preds)
-    pairs_cnt = label_preds_len * (label_preds_len - 1) / 2
+    """Return strict order agreement over all unordered sample pairs.
+
+    Label ties and prediction ties contribute zero. The denominator remains
+    N * (N - 1) / 2 to preserve the metric used by the reported tables.
+    """
+    labels = np.asarray(labels).reshape(-1)
+    pres = np.asarray(pres).reshape(-1)
+    if labels.shape[0] != pres.shape[0]:
+        raise ValueError('labels and predictions must have the same length')
+    if not np.isfinite(labels).all() or not np.isfinite(pres).all():
+        raise ValueError('labels and predictions must contain only finite values')
+
+    sample_count = labels.shape[0]
+    pairs_cnt = sample_count * (sample_count - 1) // 2
     if pairs_cnt == 0:
         return float('nan')
-    labels_sort = [ele[0] for ele in sorted_label_preds]
-    S = InversePairsCalc()
-    total_positive = S.InversePairs(labels_sort)
+
+    # Stable sorting is used only to form equal-prediction blocks. Agreements
+    # inside each block are subtracted so a prediction tie never receives
+    # credit and the result is invariant to the original sample order.
+    order = np.argsort(-pres, kind='stable')
+    labels_sort = labels[order].tolist()
+    preds_sort = pres[order]
+    counter = InversePairsCalc()
+    total_positive = counter.InversePairs(labels_sort)
+
+    block_start = 0
+    while block_start < sample_count:
+        block_end = block_start + 1
+        while block_end < sample_count and preds_sort[block_end] == preds_sort[block_start]:
+            block_end += 1
+        if block_end - block_start > 1:
+            total_positive -= counter.InversePairs(labels_sort[block_start:block_end])
+        block_start = block_end
+
     return total_positive / pairs_cnt
 
 

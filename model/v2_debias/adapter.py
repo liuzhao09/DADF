@@ -94,7 +94,7 @@ class BaseAdapter:
         """
         返回 base model 最后一个 hidden layer 的特征向量（debias_v2 专用上下文）。
         默认返回 None（debias_net 收到 None 时退回纯 logit 变换模式）。
-        WideAndDeep 系列（VR/WLR/D2CO）override 此方法返回 32-dim hidden。
+        WideAndDeep 系列（VR/WLR/D2CO）override 此方法返回 64-dim hidden。
         调用方无需 .detach()，各 override 内部已处理。
         """
         return None

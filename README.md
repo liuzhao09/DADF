@@ -10,7 +10,7 @@ Reference implementation accompanying **DADF: A Distribution-Aware Debiasing Fra
 
 This repository provides a research reference implementation of the DADF structure used for the public-benchmark study. It is aligned with the method described in the manuscript, but it is **not the complete production implementation**. Proprietary production feature pipelines, first-stage multi-task towers, serving infrastructure, and system optimizations are not included. The public code reconstructs the method with public-dataset features and auxiliary labels so that the core architecture can be inspected and evaluated.
 
-Unless an ablation flag is explicitly supplied, the public implementation follows the manuscript: the first-stage predictor is frozen during correction training, duration groups use hard routing, Box-Cox parameters are group-level rather than adapted per sample, and no additional user-level or video-level correction stage is applied.
+Unless an experimental flag is explicitly supplied, the public implementation follows the manuscript: the first-stage predictor is frozen during correction training, duration groups use hard routing, Box-Cox parameters are group-level rather than adapted per sample, and no additional user-level or video-level correction stage is applied. The default objective contains transformed-space fitting, absolute-time, moment-regularization, and auxiliary-task terms. Prediction-side regularization, lambda smoothing, kurtosis regularization, bucket reweighting, backbone-specific auto-tuning, and narrow inference clipping are disabled by default.
 
 ## Overview
 
@@ -30,7 +30,7 @@ where `b_hat` is the predicted correction factor estimated from ranking features
 
 2. **Debias-Factor-Aware Correction** — Assigns each sample to a duration group and selects the corresponding expert through hard one-hot routing, matching the manuscript definition.
 
-3. **Multi-Label-Aware Representation** — Uses auxiliary engagement signals (short view, completion, effective view, long view, and thresholded watch labels) as side information for correction-factor estimation.
+3. **Multi-Label-Aware Representation** — Applies fixed nonlinear projections to auxiliary logits, concatenates them with auxiliary tower representations and the shared correction context, and uses an MLP to estimate correction factors.
 
 ### Two-Stage Training
 
@@ -136,9 +136,9 @@ python wechat21_process.py
 This generates `wechat21_data.pkl` (10% sample) and `wechat21_data_full.pkl` (full data) in `dataset/wechat21/`.
 
 **Preprocessing details:**
-- Features are encoded with vocabularies built on the full dataset (no data leakage).
-- Train/val/test split: 80% / 10% / 10%, stratified by time order.
-- Normalization statistics (max value, duration buckets) computed on training set only.
+- Feature vocabularies are shared across splits.
+- Train/validation/test examples use a fixed-seed random 80% / 10% / 10% split.
+- Label-derived normalization statistics (max value and duration buckets) are computed on the training set only.
 - Duration bucket quantiles for D2Q are computed on the training set only.
 
 ## Running DADF
@@ -234,7 +234,7 @@ DADF is evaluated on the following metrics:
 | Metric | Description |
 |--------|-------------|
 | **MAE** (seconds) | Mean Absolute Error in watch-time prediction |
-| **XAUC** | Ranking quality metric for continuous labels (AUC generalization) |
+| **XAUC** | Strict order agreement over all unordered sample pairs; label or prediction ties receive zero credit |
 
 ## Main Results
 
@@ -264,6 +264,8 @@ The values below are copied from the current manuscript table so that the reposi
 | EGMN | w/ TranSUN | 4.255 | 0.6120 | 18.099 | 0.6892 |
 | EGMN | w/ DADF | **4.002** | **0.6257** | **17.955** | **0.6911** |
 
+The study repeated offline comparisons with matched random seeds to check stability. The compact tables retain the manuscript point estimates rather than per-run variance; reproducibility studies should use the same seed list for paired methods and compute uncertainty from the resulting logs.
+
 ### Baseline Optimization and Fairness
 
 We do not intentionally weaken the first-stage baselines to enlarge the apparent gains from second-stage correction. Before applying TranSUN or DADF, we optimized each reproduced baseline on the validation set and brought it to a competitive operating point. All backbones use the same feature preprocessing and data split, 16-dimensional sparse-feature embeddings, and comparable MLP capacity (hidden dimensions 256, 128, and 64). Method-specific settings, including learning rates, loss weights, discretization granularity, and mixture-component counts, were selected using validation performance. For each backbone, Base, w/ TranSUN, and w/ DADF share the exact same trained and frozen first-stage predictor; therefore, differences within a backbone group reflect the correction method rather than a weaker base model.
@@ -292,7 +294,7 @@ As an external sanity check, the original [RecSys 2025 EGMN paper](https://arxiv
 | `--abs_time_weight` | Absolute time Huber loss weight | 0.8 | 0.8 |
 | `--aux_target_weight` | Auxiliary target loss weight | 0.10 | 0.10 |
 
-Hard duration routing and freezing the first-stage predictor are defaults. `--soft_routing` and `--joint_finetune_base` are provided only for explicit ablation studies.
+Hard duration routing, equal-frequency buckets, auxiliary heads, and a frozen first-stage predictor are defaults. `--soft_routing`, `--joint_finetune_base`, `--nr_pred_weight`, `--lambda_smooth_weight`, `--kurtosis_weight`, `--bucket_reweighting`, and `--backbone_autotune` are explicit experimental options and do not affect the manuscript-aligned default.
 
 ## Citation
 

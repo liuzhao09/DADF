@@ -5,7 +5,7 @@ WeChat21 数据集预处理脚本
 运行方式（从项目根目录）:
   cd dataset/wechat21 && python wechat21_process.py
 
-原始数据文件（row_data/ 目录）:
+原始数据文件（raw_data/ 目录）:
   user_action.csv  — userid, feedid, play, date_, device, ...
   feed_info.csv    — feedid, authorid, videoplayseconds, manual_keyword_list, ...
 
@@ -23,8 +23,8 @@ import pickle
 
 # ── 1. 读取原始数据 ────────────────────────────────────────────────────────────
 print("Step 1: 读取原始数据...")
-df_action = pd.read_csv("row_data/user_action.csv")
-df_feed   = pd.read_csv("row_data/feed_info.csv")
+df_action = pd.read_csv("raw_data/user_action.csv")
+df_feed   = pd.read_csv("raw_data/feed_info.csv")
 print("  user_action: {} 行".format(len(df_action)))
 print("  feed_info:   {} 行".format(len(df_feed)))
 
@@ -40,7 +40,7 @@ df = df[df['play'] > 0]
 df = df[df['videoplayseconds'] > 0]
 print("  过滤后行数: {}".format(len(df)))
 
-# 全量打散（vocab 和 normalization 都基于全量建，保证两份 pkl 特征维度一致）
+# 固定种子打散。特征词表跨划分共享，标签统计在 split 后仅由训练集计算。
 df = df.sample(frac=1.0, random_state=312).reset_index(drop=True)
 print("  打散完成")
 
