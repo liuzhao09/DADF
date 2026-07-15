@@ -264,6 +264,12 @@ The values below are copied from the current manuscript table so that the reposi
 | EGMN | w/ TranSUN | 4.255 | 0.6120 | 18.099 | 0.6892 |
 | EGMN | w/ DADF | **4.002** | **0.6257** | **17.955** | **0.6911** |
 
+### Baseline Optimization and Fairness
+
+We do not intentionally weaken the first-stage baselines to enlarge the apparent gains from second-stage correction. Before applying TranSUN or DADF, we optimized each reproduced baseline on the validation set and brought it to a competitive operating point. All backbones use the same feature preprocessing and data split, 16-dimensional sparse-feature embeddings, and comparable MLP capacity (hidden dimensions 256, 128, and 64). Method-specific settings, including learning rates, loss weights, discretization granularity, and mixture-component counts, were selected using validation performance. For each backbone, Base, w/ TranSUN, and w/ DADF share the exact same trained and frozen first-stage predictor; therefore, differences within a backbone group reflect the correction method rather than a weaker base model.
+
+As an external sanity check, the original [RecSys 2025 EGMN paper](https://arxiv.org/pdf/2508.12665) reports EGMN results of 4.204 MAE / 0.6093 XAUC on KuaiRec and 18.88 MAE / 0.6692 XAUC on WeChat. Our tuned EGMN baseline reaches 4.081 / 0.6245 and 18.330 / 0.6896, respectively. Thus, the DADF comparison starts from an EGMN baseline that is stronger on both reported metrics, rather than from a degraded reproduction. Because preprocessing details and evaluation splits may differ between repositories, this cross-paper comparison should be treated as a reference sanity check, not as a strictly controlled head-to-head experiment.
+
 ### WLR Ablation
 
 | Variant | KuaiRec MAE | KuaiRec XAUC | WeChat21 MAE | WeChat21 XAUC |

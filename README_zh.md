@@ -245,6 +245,12 @@ python model/v2_debias/train.py \
 | EGMN | w/ TranSUN | 4.255 | 0.6120 | 18.099 | 0.6892 |
 | EGMN | w/ DADF | **4.002** | **0.6257** | **17.955** | **0.6911** |
 
+### Baseline 优化与公平性说明
+
+我们不会通过刻意弱化第一阶段 baseline 来放大二阶段纠偏方法的相对收益。在接入 TranSUN 或 DADF 之前，我们首先基于验证集优化每个复现的 baseline，使其达到具有竞争力的工作点。所有 backbone 使用一致的特征预处理和数据划分、16 维稀疏特征 embedding，以及规模可比的 MLP（隐藏层维度统一为 256、128、64）。各方法特有的学习率、损失权重、离散化粒度和混合分量数量等参数均依据验证集效果选择。对于同一 backbone，Base、w/ TranSUN 和 w/ DADF 共用完全相同且已经冻结的第一阶段预测器，因此组内差异反映的是纠偏方法本身，而不是来自更弱的基础模型。
+
+作为外部合理性校验，原始 [RecSys 2025 EGMN 论文](https://arxiv.org/pdf/2508.12665) 报告的 EGMN 结果为：KuaiRec 上 MAE 4.204 / XAUC 0.6093，WeChat 上 MAE 18.88 / XAUC 0.6692。我们调优后的 EGMN baseline 分别达到 4.081 / 0.6245 和 18.330 / 0.6896，在两套数据的两个指标上均更优。因此，DADF 的对比起点并不是一个被劣化的 EGMN 复现，而是一个已经充分优化的强 baseline。考虑到不同仓库间的数据预处理细节和评估划分可能并不完全一致，这一跨论文比较应视为外部合理性校验，而不是严格受控的 head-to-head 实验。
+
 ### WLR 消融实验
 
 | 变体 | KuaiRec MAE | KuaiRec XAUC | WeChat21 MAE | WeChat21 XAUC |
