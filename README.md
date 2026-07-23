@@ -264,11 +264,13 @@ The values below are copied from the current manuscript table so that the reposi
 | EGMN | w/ TranSUN | 4.255 | 0.6120 | 18.099 | 0.6892 |
 | EGMN | w/ DADF | **4.002** | **0.6257** | **17.955** | **0.6911** |
 
-The study repeated offline comparisons with matched random seeds to check stability. The compact tables retain the manuscript point estimates rather than per-run variance; reproducibility studies should use the same seed list for paired methods and compute uncertainty from the resulting logs.
+The manuscript study repeated offline comparisons with matched random seeds. The public runner records the seed and metrics for each execution so that new paired runs can retain their own per-seed logs.
 
 ### Baseline Quality and Matched Comparison
 
 Each reproduced first-stage backbone was tuned on the validation split and evaluated at a competitive operating point before correction. All backbones use the same feature preprocessing and data split, 16-dimensional sparse-feature embeddings, and comparable MLP capacity (hidden dimensions 256, 128, and 64). In the reported comparison, Base, w/ TranSUN, and w/ DADF within each backbone group start from the same trained first-stage checkpoint, which remains frozen during correction training. Differences within a backbone group therefore reflect the correction method rather than base-model quality.
+
+The convenience scripts in this repository reproduce the Base-versus-DADF path by warming up a selected backbone and freezing that in-memory state. The separate multi-method experiment driver used for the reported Base/TranSUN/DADF comparison, together with its archived per-seed outputs, is not included in this reference release. The tables document the reported study; new statistical replications should use one declared seed list for every paired method and retain the generated logs.
 
 As an external sanity check, the original [RecSys 2025 EGMN paper](https://arxiv.org/pdf/2508.12665) reports EGMN results of 4.204 MAE / 0.6093 XAUC on KuaiRec and 18.88 MAE / 0.6692 XAUC on WeChat. Our tuned EGMN baseline reaches 4.081 / 0.6245 and 18.330 / 0.6896, respectively. Thus, the DADF comparison starts from an EGMN baseline that is stronger on both reported metrics, rather than from a degraded reproduction. Because preprocessing details and evaluation splits may differ between repositories, this cross-paper comparison should be treated as a reference sanity check, not as a strictly controlled head-to-head experiment.
 
