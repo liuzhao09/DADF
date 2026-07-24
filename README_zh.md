@@ -135,6 +135,17 @@ python model/dadf/train.py --base_model egmn --dataset_name kuairec --full-data 
 
 在 14 个 backbone-数据集组合中，相比对应的冻结 backbone，DADF 平均降低 MAE **4.33%**，平均提升 XAUC **4.01%**。每次运行的随机种子和指标会写入本地日志目录。
 
+### EGMN 参考结果
+
+原始 [EGMN 论文](https://arxiv.org/pdf/2508.12665) 的结果可作为本仓库 EGMN backbone 复现的参考：
+
+| 来源 | KuaiRec MAE | KuaiRec XAUC | WeChat MAE | WeChat XAUC |
+|---|---:|---:|---:|---:|
+| 原始 EGMN | 4.204 | 0.6093 | 18.880 | 0.6692 |
+| 本仓库 EGMN baseline | 4.081 | 0.6245 | 18.330 | 0.6896 |
+
+本仓库复现的 EGMN 在两套数据上均达到有竞争力的工作点。由于不同仓库的数据预处理和评估划分可能存在差异，这组数值用于结果参考，不作为严格的横向对照。
+
 WLR backbone 上包含三个核心组件的消融实验：
 
 | 变体 | 移除内容 |

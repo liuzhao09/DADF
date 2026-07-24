@@ -137,6 +137,17 @@ The runner reports:
 
 Across 14 backbone-dataset settings, DADF reduces MAE by **4.33%** and improves XAUC by **4.01%** on average relative to the corresponding frozen backbone. Per-run seeds and metrics are written to the local log directory.
 
+### EGMN Reference
+
+The original [EGMN paper](https://arxiv.org/pdf/2508.12665) provides a useful reference point for the reproduced EGMN backbone:
+
+| Source | KuaiRec MAE | KuaiRec XAUC | WeChat MAE | WeChat XAUC |
+|---|---:|---:|---:|---:|
+| Original EGMN | 4.204 | 0.6093 | 18.880 | 0.6692 |
+| EGMN baseline in this repository | 4.081 | 0.6245 | 18.330 | 0.6896 |
+
+The reproduced EGMN reaches a competitive operating point on both datasets. Since preprocessing and evaluation splits may differ between repositories, these values are a reference rather than a controlled head-to-head comparison.
+
 The WLR ablation includes the three core components:
 
 | Variant | Removed component |
