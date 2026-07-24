@@ -5,17 +5,12 @@ import os
 import torch
 from torch.utils.data import Dataset, DataLoader
 
-
 class KUAIRECDataset(Dataset):
-    """
-    Load a KuaiRec Dataset.
-    Data is kept on CPU; batches are moved to device via collate_fn in KUAIRECDataLoader.
-    """
     def __init__(self, dataset_name, df, description):
         super(KUAIRECDataset, self).__init__()
         self.dataset_name = dataset_name
         self.length = len(df)
-        # Keep all tensors on CPU — device transfer happens per-batch via collate_fn
+
         self.name2array = {name: torch.from_numpy(np.array(list(df[name])).reshape([self.length, -1]))
                            for name in df.columns}
         self.format(description)
@@ -40,12 +35,7 @@ class KUAIRECDataset(Dataset):
     def __len__(self):
         return self.length
 
-
 class KUAIRECDataLoader(object):
-    """
-    Load KUAIRECDataLoader for torch train/eval.
-    Data stays on CPU; each batch is moved to `device` lazily via collate_fn.
-    """
 
     def __init__(self, dataset_name, dataset_path, device, bsz=32):
         assert os.path.exists(dataset_path), '{} does not exist'.format(dataset_path)
@@ -58,7 +48,6 @@ class KUAIRECDataLoader(object):
         self.video_duration_max = float(data.get('video_duration_max', 600.0))
 
         def _make_collate(dev):
-            """Return a collate_fn that moves each batch to `dev` on the fly."""
             def collate_fn(batch):
                 features_list, labels_list = zip(*batch)
                 features_batch = {

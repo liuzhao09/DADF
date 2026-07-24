@@ -8,7 +8,7 @@ class Cread(torch.nn.Module):
         super().__init__()
         self.features = {name: (size, type) for name, size, type in description if (type in ["ctn", 'seq', 'spr'])}
         self.build(embed_dim, share_mlp_dims, output_mlp_dims, head_num, dropout)
-    
+
     def build(self, embed_dim, share_mlp_dims, output_mlp_dims, head_num, dropout):
         self.emb_layer = torch.nn.ModuleDict()
         self.ctn_emb_layer = torch.nn.ParameterDict()
@@ -54,7 +54,7 @@ class Cread(torch.nn.Module):
                 raise ValueError('unkwon feature: {}'.format(name))
         emb = torch.concat(embs + linears, dim=1)
         share_vec = self.share_mlp(emb)
-        output_list = []  
+        output_list = []
         for output_mlp in self.output_mlps:
             output_list.append(output_mlp(share_vec))
         return torch.sigmoid(torch.concat(output_list, dim=1))

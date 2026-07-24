@@ -8,7 +8,7 @@ class TPM(torch.nn.Module):
         super().__init__()
         self.features = {name: (size, type) for name, size, type in description if (type in ["ctn", 'seq', 'spr'])}
         self.build(embed_dim, mlp_dims, dropout,class_num)
-    
+
     def build(self, embed_dim, mlp_dims, dropout,class_num):
         self.emb_layer = torch.nn.ModuleDict()
         self.ctn_emb_layer = torch.nn.ParameterDict()

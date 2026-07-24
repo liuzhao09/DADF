@@ -1,29 +1,10 @@
 #!/usr/bin/env bash
-# =============================================================================
-# run_DADF_wlr.sh — DADF on WLR backbone (KuaiRec + WeChat21)
-#
-# DADF: Distribution-Aware Debiasing Framework for Watch-Time Regression
-# Reference implementation accompanying the DADF manuscript
-#
-# This script runs DADF with WLR (Weighted Logistic Regression) as the base
-# model on both KuaiRec and WeChat21 datasets.
-#
-# Usage:
-#   bash run_DADF_wlr.sh                         # default: both datasets, parallel
-#   DATASET=kuairec bash run_DADF_wlr.sh          # KuaiRec only
-#   DATASET=wechat21 bash run_DADF_wlr.sh         # WeChat21 only
-#   DEVICE=cuda:0 bash run_DADF_wlr.sh            # specify GPU
-#   SEQUENTIAL=1 bash run_DADF_wlr.sh             # sequential mode
-#   SEED=42 bash run_DADF_wlr.sh                  # set random seed
-#
-# Estimated wall time: 30-60 min per dataset (depends on GPU)
-# =============================================================================
 
 set -u
 set -m
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-DADF_ENTRY="${SCRIPT_DIR}/model/v2_debias/train.py"
+DADF_ENTRY="${SCRIPT_DIR}/model/dadf/train.py"
 DATASET_PATH="${SCRIPT_DIR}/dataset"
 
 DEVICE=${DEVICE:-cuda:0}
@@ -50,9 +31,6 @@ echo "============================================================" | tee -a "$S
 
 [ ! -f "${DADF_ENTRY}" ] && { echo "ERROR: ${DADF_ENTRY} not found"; exit 1; }
 
-# ---------------------------------------------------------------------------
-# Data pre-check: make sure processed pkl files exist
-# ---------------------------------------------------------------------------
 check_dataset() {
     local ds=$1
     local pkl="${DATASET_PATH}/${ds}/${ds}_data_full.pkl"
@@ -85,31 +63,14 @@ if [[ "$DATASET" == "wechat21" || "$DATASET" == "all" ]]; then
     check_dataset wechat21
 fi
 
-# ---------------------------------------------------------------------------
-# DADF reference configuration (aligned with paper Table 1 main results)
-#
-# WLR + DADF configuration:
-#   - Two-stage training: base warmup + correction training with the base frozen
-#   - Box-Cox transformation for distribution normalization
-#   - Duration-aware bucket experts (K=4 for KuaiRec, K=3 for WeChat21)
-#   - Hard one-hot duration routing (default; matches the manuscript)
-#   - Frozen first-stage predictor during correction training (default)
-#   - Auxiliary watch-time targets for multi-task learning
-#   - Normal regularization loss to enforce Gaussian-like distribution
-# ---------------------------------------------------------------------------
 
 DADF_BASE="python3 ${DADF_ENTRY} --dataset_path ${DATASET_PATH} --seed ${SEED}"
 AUX_TARGETS="svr,fpr,evr,lvr,evr_p60,lvr_p80,lvr_p90"
 
-# ---------------------------------------------------------------------------
-# KuaiRec: WLR + DADF (K=4 quantile buckets, epoch=25)
-#   Main table: MAE ~4.172s, XAUC ~0.6227
-# ---------------------------------------------------------------------------
 CMD_KUAIREC="${DADF_BASE} \
 --base_model wlr \
 --dataset_name kuairec \
 --full-data \
---two_stage_debias \
 --debias_bucket_num 4 \
 --duration_thresh_mode quantile \
 --epoch 25 \
@@ -125,15 +86,10 @@ CMD_KUAIREC="${DADF_BASE} \
 --aux_target_weight 0.10 \
 --device ${DEVICE}"
 
-# ---------------------------------------------------------------------------
-# WeChat21: WLR + DADF (K=3 quantile buckets, epoch=30)
-#   Main table: MAE ~17.838s, XAUC ~0.6934
-# ---------------------------------------------------------------------------
 CMD_WECHAT21="${DADF_BASE} \
 --base_model wlr \
 --dataset_name wechat21 \
 --full-data \
---two_stage_debias \
 --debias_bucket_num 3 \
 --duration_thresh_mode quantile \
 --epoch 30 \
@@ -149,9 +105,6 @@ CMD_WECHAT21="${DADF_BASE} \
 --aux_target_weight 0.10 \
 --device ${DEVICE}"
 
-# ---------------------------------------------------------------------------
-# Launch runs
-# ---------------------------------------------------------------------------
 LAUNCHED_PIDS=()
 
 cleanup_signal() {
@@ -208,9 +161,6 @@ if [[ "$DATASET" == "wechat21" || "$DATASET" == "all" ]]; then
     run_one "DADF_wlr_wechat21" "$CMD_WECHAT21"
 fi
 
-# ---------------------------------------------------------------------------
-# Wait for completion
-# ---------------------------------------------------------------------------
 if [[ "$SEQUENTIAL" != "1" && ${#LAUNCHED_PIDS[@]} -gt 0 ]]; then
     echo "" | tee -a "$SUMMARY"
     echo "  Waiting for ${#LAUNCHED_PIDS[@]} run(s) to complete..." | tee -a "$SUMMARY"
@@ -242,9 +192,6 @@ echo " elapsed=${DUR}s ($((DUR/60))min)"                           | tee -a "$SU
 echo " log_dir: ${LOG_DIR}"                                        | tee -a "$SUMMARY"
 echo "============================================================" | tee -a "$SUMMARY"
 
-# ---------------------------------------------------------------------------
-# Quick results summary
-# ---------------------------------------------------------------------------
 echo "" | tee -a "$SUMMARY"
 echo " Results:" | tee -a "$SUMMARY"
 printf "  %-25s %-10s %-10s\n" "Run" "MAE(s)" "XAUC" | tee -a "$SUMMARY"

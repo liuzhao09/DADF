@@ -5,10 +5,10 @@ from unittest import mock
 import numpy as np
 import torch
 
-from model.v2_debias.network import DebiasNetV2
-from model.v2_debias.train import get_args
+from model.dadf.network import DADF
+from model.dadf.train import get_args
+from model.dadf.transforms import boxcox_inverse, boxcox_transform
 from utils import eval_xauc
-
 
 class PublicContractTest(unittest.TestCase):
     def test_xauc_on_strict_orders(self):
@@ -54,7 +54,7 @@ class PublicContractTest(unittest.TestCase):
     def test_manuscript_aligned_defaults(self):
         with mock.patch.object(sys, "argv", ["train.py"]):
             args = get_args()
-        self.assertTrue(args.hard_routing)
+        self.assertFalse(args.shared_correction)
         self.assertTrue(args.freeze_base)
         self.assertTrue(args.use_aux_targets)
         self.assertEqual(args.duration_thresh_mode, "quantile")
@@ -66,12 +66,11 @@ class PublicContractTest(unittest.TestCase):
         self.assertFalse(args.bucket_reweighting)
         self.assertFalse(args.backbone_autotune)
 
-    def test_default_gate_is_hard_duration_routing(self):
-        network = DebiasNetV2(
+    def test_default_routing_is_duration_indexed(self):
+        network = DADF(
             user_vocab_size=2,
             video_vocab_size=2,
             bucket_num=3,
-            hard_routing=True,
         )
         weights = network._routing_weights(
             torch.tensor([[0.1], [0.5], [0.9]]),
@@ -88,6 +87,60 @@ class PublicContractTest(unittest.TestCase):
             routed_lambda,
             torch.tensor([[-0.2], [0.1], [0.4]]),
         )
+    def test_boxcox_round_trip(self):
+        values = torch.tensor([[0.2], [1.0], [3.0], [8.0]])
+        lambdas = torch.tensor([[-0.2], [0.0], [0.3], [0.7]])
+        recovered = boxcox_inverse(boxcox_transform(values, lambdas), lambdas)
+        torch.testing.assert_close(recovered, values, rtol=1e-5, atol=1e-6)
+
+    def test_dadf_forward_contract(self):
+        network = DADF(
+            user_vocab_size=4,
+            video_vocab_size=5,
+            bucket_num=3,
+            aux_target_names=("short_view", "completion"),
+        )
+        transformed, auxiliary_logits = network(
+            base_pred=torch.tensor([[0.2], [0.5], [0.8]]),
+            user_id=torch.tensor([[0], [1], [2]]),
+            video_id=torch.tensor([[0], [1], [2]]),
+            duration=torch.tensor([[0.1], [0.5], [0.9]]),
+            thresholds=[0.3, 0.7],
+            proxy=torch.tensor([[0.2], [0.5], [0.8]]),
+            return_aux=True,
+        )
+        self.assertEqual(transformed.shape, (3, 1))
+        self.assertTrue(torch.isfinite(transformed).all())
+        self.assertEqual(set(auxiliary_logits), {"short_view", "completion"})
+
+    def test_correction_loss_does_not_update_auxiliary_heads(self):
+        network = DADF(
+            user_vocab_size=4,
+            video_vocab_size=5,
+            bucket_num=2,
+            aux_target_names=("short_view",),
+        )
+        transformed = network(
+            base_pred=torch.tensor([[0.2], [0.8]]),
+            user_id=torch.tensor([[0], [1]]),
+            video_id=torch.tensor([[0], [1]]),
+            duration=torch.tensor([[0.1], [0.9]]),
+            thresholds=[0.5],
+            proxy=torch.tensor([[0.2], [0.8]]),
+        )
+        transformed.sum().backward()
+        self.assertTrue(all(
+            parameter.grad is None for parameter in network.aux_heads.parameters()
+        ))
+
+    def test_shared_correction_ablation_uses_one_expert(self):
+        network = DADF(
+            user_vocab_size=2,
+            video_vocab_size=2,
+            bucket_num=3,
+            shared_correction=True,
+        )
+        self.assertEqual(len(network.regime_experts), 1)
 
 
 if __name__ == "__main__":

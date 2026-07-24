@@ -3,7 +3,6 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-
 def get_playtime_percentiles_range(dataloader, wr_bucknum, _device):
     all_play_time = []
     for _, (_, label) in enumerate(dataloader):
@@ -14,7 +13,6 @@ def get_playtime_percentiles_range(dataloader, wr_bucknum, _device):
     bucket_begins = torch.tensor(percen_value[:-1], dtype=torch.float32, device=_device).unsqueeze(0)
     bucket_ends = torch.tensor(percen_value[1:], dtype=torch.float32, device=_device).unsqueeze(0)
     return bucket_begins, bucket_ends
-
 
 def get_tree_classify_loss(label_dict, weight_dict, label_encoding_predict, tree_num_intervals=32):
     auxiliary_loss_ = 0.0
@@ -27,7 +25,6 @@ def get_tree_classify_loss(label_dict, weight_dict, label_encoding_predict, tree
             interval_loss = F.binary_cross_entropy(interval_preds, interval_label, weight=interval_weight)
             auxiliary_loss_ += interval_loss
     return (auxiliary_loss_ / (tree_num_intervals - 1.0)).float()
-
 
 def get_tree_encoded_label(label, tree_num_intervals, begins, ends):
     label_dict = {}
@@ -47,7 +44,6 @@ def get_tree_encoded_label(label, tree_num_intervals, begins, ends):
             label_dict[1000 * i + j] = label_temp
             weight_dict[1000 * i + j] = weight_temp
     return label_dict, weight_dict
-
 
 def get_tree_encoded_value(label_encoding_predict, tree_num_intervals, begins, ends):
     height = int(math.log2(tree_num_intervals))
@@ -72,7 +68,6 @@ def get_tree_encoded_value(label_encoding_predict, tree_num_intervals, begins, e
     e_x2 = torch.sum((temp_encoded_playtime ** 2) * encoded_prob, dim=-1, keepdim=True)
     var = torch.sqrt(torch.abs(e_x2 - encoded_playtime ** 2) + 1e-8)
     return encoded_playtime.float(), torch.sum(var).float()
-
 
 class InversePairsCalc:
     def InversePairs(self, data):
@@ -109,17 +104,10 @@ class InversePairsCalc:
             return merge(mergesort(array[:cut]), mergesort(array[cut:]))
         return mergesort(data)[1]
 
-
 def eval_mae(labels, scores, scale=1.0):
     return np.mean(np.abs(labels - scores)) * scale
 
-
 def eval_xauc(labels, pres):
-    """Return strict order agreement over all unordered sample pairs.
-
-    Label ties and prediction ties contribute zero. The denominator remains
-    N * (N - 1) / 2 to preserve the metric used by the reported tables.
-    """
     labels = np.asarray(labels).reshape(-1)
     pres = np.asarray(pres).reshape(-1)
     if labels.shape[0] != pres.shape[0]:
@@ -132,9 +120,6 @@ def eval_xauc(labels, pres):
     if pairs_cnt == 0:
         return float('nan')
 
-    # Stable sorting is used only to form equal-prediction blocks. Agreements
-    # inside each block are subtracted so a prediction tie never receives
-    # credit and the result is invariant to the original sample order.
     order = np.argsort(-pres, kind='stable')
     labels_sort = labels[order].tolist()
     preds_sort = pres[order]
@@ -151,7 +136,6 @@ def eval_xauc(labels, pres):
         block_start = block_end
 
     return total_positive / pairs_cnt
-
 
 def eval_by_duration_bucket(labels, scores, durations, play_duration_max=None, dataset_name='kuairec', save_path=None):
     labels    = np.asarray(labels,    dtype=float)

@@ -8,7 +8,7 @@ class D2Q(torch.nn.Module):
         super().__init__()
         self.features = {name: (size, type) for name, size, type in description if (type in ["ctn", 'seq', 'spr'])}
         self.build(embed_dim, mlp_dims, dropout)
-    
+
     def build(self, embed_dim, mlp_dims, dropout):
         self.emb_layer = torch.nn.ModuleDict()
         self.ctn_emb_layer = torch.nn.ParameterDict()
@@ -28,10 +28,6 @@ class D2Q(torch.nn.Module):
                 raise ValueError('unkown feature type: {}'.format(type))
         self.mlp = MultiLayerPerceptronD2Q(embed_output_dim, mlp_dims, dropout)
         return
-
-    # def init(self):
-    #     for param in self.parameters():
-    #         torch.nn.init.uniform_(param, -0.01, 0.01)
 
     def forward(self, x_dict):
         linears = []

@@ -14,13 +14,9 @@ class FeaturesLinear(torch.nn.Module):
         x = x + x.new_tensor(self.offsets).unsqueeze(0)
         return torch.sum(self.fc(x), dim=1) + self.bias
 
-
 class FeaturesEmbedding(torch.nn.Module):
 
     def __init__(self, field_dims, embed_dim):
-        """
-        :param x: Long tensor of size ``(batch_size, num_fields)``
-        """
         super().__init__()
         self.embedding = torch.nn.Embedding(sum(field_dims), embed_dim)
         self.offsets = np.array((0, *np.cumsum(field_dims)[:-1]), dtype=np.int64)
@@ -29,7 +25,6 @@ class FeaturesEmbedding(torch.nn.Module):
     def forward(self, x):
         x = x + x.new_tensor(self.offsets).unsqueeze(0)
         return self.embedding(x)
-
 
 class SeqFeatureEmbedding(torch.nn.Module):
 
@@ -46,7 +41,6 @@ class SeqFeatureEmbedding(torch.nn.Module):
         emb = torch.concat(embs, dim=1)
         return emb
 
-
 class FactorizationMachine(torch.nn.Module):
 
     def __init__(self, reduce_sum=True):
@@ -54,16 +48,12 @@ class FactorizationMachine(torch.nn.Module):
         self.reduce_sum = reduce_sum
 
     def forward(self, x):
-        """
-        :param x: Float tensor of size ``(batch_size, num_fields, embed_dim)``
-        """
         square_of_sum = torch.sum(x, dim=1) ** 2
         sum_of_square = torch.sum(x ** 2, dim=1)
         ix = square_of_sum - sum_of_square
         if self.reduce_sum:
             ix = torch.sum(ix, dim=1, keepdim=True)
         return 0.5 * ix
-
 
 class MultiLayerPerceptron(torch.nn.Module):
 
@@ -81,12 +71,7 @@ class MultiLayerPerceptron(torch.nn.Module):
         self.mlp = torch.nn.Sequential(*layers)
 
     def forward(self, x):
-        """
-        :param x: Float tensor of size ``(batch_size, embed_dim)``
-        """
         return self.mlp(x)
-
-
 
 class DurationMultiLayerPerceptron(torch.nn.Module):
 
@@ -104,15 +89,11 @@ class DurationMultiLayerPerceptron(torch.nn.Module):
         self.output_layer = torch.nn.Linear(input_dim, 1) if output_layer else None
 
     def forward(self, x, duration):
-        """
-        :param x: Float tensor of size ``(batch_size, embed_dim)``
-        """
         for mlp in self.mlps:
             x = mlp(torch.concat([x, duration], dim=1))
         if self.output_layer is not None:
             x = self.output_layer(x)
         return x
-
 
 class Swish(torch.nn.Module):
     def forward(self, x):
@@ -134,9 +115,6 @@ class MultiLayerPerceptronD2Q(torch.nn.Module):
         self.mlp = torch.nn.Sequential(*layers)
 
     def forward(self, x):
-        """
-        :param x: Float tensor of size ``(batch_size, embed_dim)``
-        """
         return self.mlp(x)
 
 class MultiLayerPerceptronTPM(torch.nn.Module):
@@ -155,9 +133,6 @@ class MultiLayerPerceptronTPM(torch.nn.Module):
         self.mlp = torch.nn.Sequential(*layers)
 
     def forward(self, x):
-        """
-        :param x: Float tensor of size ``(batch_size, embed_dim)``
-        """
         return self.mlp(x)
 
 class AttentionalFactorizationMachine(torch.nn.Module):
@@ -170,9 +145,6 @@ class AttentionalFactorizationMachine(torch.nn.Module):
         self.dropouts = dropouts
 
     def forward(self, x):
-        """
-        :param x: Float tensor of size ``(batch_size, num_fields, embed_dim)``
-        """
         num_fields = x.shape[1]
         row, col = list(), list()
         for i in range(num_fields - 1):
@@ -200,9 +172,6 @@ class CrossNetwork(torch.nn.Module):
         ])
 
     def forward(self, x):
-        """
-        :param x: Float tensor of size ``(batch_size, num_fields, embed_dim)``
-        """
         x0 = x
         for i in range(self.num_layers):
             xw = self.w[i](x)

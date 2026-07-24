@@ -8,7 +8,7 @@ class WideAndDeep(torch.nn.Module):
         super().__init__()
         self.features = {name: (size, type) for name, size, type in description if (type in ["ctn", 'seq', 'spr'])}
         self.build(embed_dim, mlp_dims, dropout)
-    
+
     def build(self, embed_dim, mlp_dims, dropout):
         self.emb_layer = torch.nn.ModuleDict()
         self.ctn_emb_layer = torch.nn.ParameterDict()
@@ -33,15 +33,6 @@ class WideAndDeep(torch.nn.Module):
             torch.nn.init.uniform_(param, -0.01, 0.01)
 
     def forward_with_hidden(self, x_dict):
-        """
-        与 forward 相同逻辑，额外返回 MLP 最后一个 hidden layer 的 32-dim 输出。
-
-        hidden: [B, 32]，即 mlp_dims 最后维（Linear(64,32)+BN+ReLU+Dropout 之后、
-                Linear(32,1) 之前）。
-        不改 state_dict：通过 self.mlp.mlp[:-1] / [-1] 切片迭代，不修改模块注册结构。
-        注意：ctn linear part（wide 分支）不包含在 hidden 里——它是全局校准项，
-              不是特征交叉表示，debias_net 已经通过 base_pred 间接感知到 wide 的影响。
-        """
         linears = []
         embs = []
         for name, (_, type) in self.features.items():
@@ -57,9 +48,8 @@ class WideAndDeep(torch.nn.Module):
                 embs.append(torch.sum(seq_emb * seq_mask, dim=1) / mask_sum)
         emb = torch.concat(embs, dim=1)
 
-        # self.mlp.mlp 是 Sequential，[:-1] 取除最后 Linear(32,1) 之外的所有层
-        hidden = self.mlp.mlp[:-1](emb)          # [B, 32]
-        res    = self.mlp.mlp[-1](hidden)         # [B, 1]
+        hidden = self.mlp.mlp[:-1](emb)
+        res    = self.mlp.mlp[-1](hidden)
         if len(linears) > 0:
             linear_part = torch.concat(linears, dim=1).sum(dim=1, keepdims=True)
             res += linear_part
@@ -67,6 +57,5 @@ class WideAndDeep(torch.nn.Module):
         return pred, hidden
 
     def forward(self, x_dict):
-        """标准前向，行为与原始 WideAndDeep 完全一致。"""
         pred, _ = self.forward_with_hidden(x_dict)
         return pred

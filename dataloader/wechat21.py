@@ -6,14 +6,7 @@ import pandas as pd
 import torch
 from torch.utils.data import DataLoader
 
-
 class WeChat21DataLoader(object):
-    """
-    WeChat21 数据集加载器。
-    pkl 格式与 KuaiRec 完全相同：dict，keys 为
-    'train', 'test', 'description', 'play_duration_max', 'video_duration_max'。
-    数据在 CPU 上预加载，每个 batch 通过 collate_fn 懒惰移动到 device。
-    """
 
     def __init__(self, dataset_name, dataset_path, device, bsz=32):
         assert os.path.exists(dataset_path), '{} does not exist'.format(dataset_path)

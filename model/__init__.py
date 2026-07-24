@@ -4,4 +4,4 @@ from model.cread import Cread
 from model.d2q import D2Q
 from model.tpm import TPM
 from model.egmn import EGMN
-from model.v2_debias import DebiasNetV2, build_adapter, list_supported_models
+from model.dadf import DADF, build_adapter, list_supported_models
