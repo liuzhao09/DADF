@@ -35,11 +35,11 @@ The first-stage prediction is detached when the correction target is constructed
 
 This repository provides the public-benchmark implementation used to study the DADF architecture on KuaiRec and WeChat21. It includes data preprocessing, seven first-stage predictors, the DADF correction module, training, and MAE/XAUC evaluation.
 
-The repository focuses on the reproducible research path. Dataset files and deployment-specific infrastructure are not distributed here. The public auxiliary heads are trained from labels available in the two public datasets and implement the same representation pattern described in the paper.
+The repository focuses on the reproducible research path. Dataset files and deployment-specific infrastructure are not distributed here. The public auxiliary heads are trained from labels available in the two public datasets and follow the same auxiliary representation design.
 
-## Fair Comparison Protocol
+## Experimental Setup
 
-The offline comparison controls the first-stage model and correction protocol:
+The experiments use a consistent first-stage model and correction setup:
 
 - all backbones use the same feature preprocessing and the same 80%/10%/10% data split;
 - sparse feature embeddings use 16 dimensions;
@@ -49,7 +49,7 @@ The offline comparison controls the first-stage model and correction protocol:
 - the first-stage checkpoint is frozen during DADF correction training;
 - matched runs use the same split and random seed.
 
-This setup keeps model capacity and data treatment comparable, so the within-backbone difference reflects the correction stage rather than a weaker base model.
+These settings keep model capacity and data treatment consistent across methods within each backbone group.
 
 ## Supported First-Stage Predictors
 
@@ -63,7 +63,7 @@ This setup keeps model capacity and data treatment comparable, so the within-bac
 | `d2co` | Duration-related component correction |
 | `egmn` | Exponential-Gaussian mixture modeling |
 
-## Manuscript-Aligned Defaults
+## Default Configuration
 
 | Setting | KuaiRec | WeChat21 |
 |---|---:|---:|
@@ -108,7 +108,7 @@ Follow [`dataset/README.md`](dataset/README.md) to place and preprocess the raw 
 
 ## Running DADF
 
-Run the manuscript-aligned WLR configuration on KuaiRec:
+Run the standard WLR configuration on KuaiRec:
 
 ```bash
 DATASET=kuairec DEVICE=cuda:0 bash run_DADF_wlr.sh
@@ -133,11 +133,11 @@ python model/dadf/train.py --base_model egmn --dataset_name kuairec --full-data 
 The runner reports:
 
 - **MAE**, where lower is better;
-- **XAUC**, the strict pairwise ordering agreement used in the paper, where higher is better.
+- **XAUC**, a strict pairwise ordering agreement metric, where higher is better.
 
-Across the 14 backbone-dataset settings reported in the manuscript, DADF reduces MAE by **4.33%** and improves XAUC by **4.01%** on average relative to the corresponding frozen backbone. Per-run seeds and metrics are written to the local log directory.
+Across 14 backbone-dataset settings, DADF reduces MAE by **4.33%** and improves XAUC by **4.01%** on average relative to the corresponding frozen backbone. Per-run seeds and metrics are written to the local log directory.
 
-The WLR ablation evaluates the three paper components:
+The WLR ablation includes the three core components:
 
 | Variant | Removed component |
 |---|---|
@@ -145,7 +145,7 @@ The WLR ablation evaluates the three paper components:
 | `w/o Factor` | Duration-indexed routing, replaced by a shared correction mapping |
 | `w/o Aux.` | Auxiliary behavioral representation |
 
-All three removals reduce MAE/XAUC performance on both public datasets in the reported study. The code exposes `--shared_correction` for the routing ablation and `--no_aux_targets` for the auxiliary ablation.
+Removing any of the three components reduces MAE/XAUC performance on both public datasets. The code exposes `--shared_correction` for the routing ablation and `--no_aux_targets` for the auxiliary ablation.
 
 ## Repository Layout
 
@@ -164,8 +164,7 @@ run_DADF_wlr.sh    WLR experiment entry point
 @misc{yang2026dadf,
   title  = {DADF: A Distribution-Aware Debiasing Framework for Watch-Time Regression in Recommender Systems},
   author = {Yiqing Yang and Xinlong Zhao and Zhao Liu and Xiao Lv and Ruiming Tang and Kun Gai},
-  year   = {2026},
-  note   = {Manuscript}
+  year   = {2026}
 }
 ```
 

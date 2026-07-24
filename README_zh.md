@@ -16,7 +16,7 @@ DADF 是一个轻量级的二阶段观看时长纠偏框架。它冻结已经训
 
 ## 核心模块
 
-代码实现与论文一致的三个组件：
+代码包含三个核心组件：
 
 1. **分组目标变换（Regime-Specific Target Transformation）**：对乘性纠偏目标应用可学习的组级 Box-Cox 变换。
 2. **时长索引专家路由（Duration-Indexed Expert Routing）**：按视频时长确定所属区间，并通过 hard routing 仅执行一个纠偏专家。
@@ -35,11 +35,11 @@ DADF 是一个轻量级的二阶段观看时长纠偏框架。它冻结已经训
 
 本仓库提供用于 KuaiRec 和 WeChat21 公共数据集实验的 DADF 参考实现，包括数据预处理、七种第一阶段预测器、DADF 纠偏模块、训练流程，以及 MAE/XAUC 评估。
 
-仓库聚焦可复现的公开研究路径，不分发数据集文件和部署相关基础设施。公开版本使用两套公共数据中可构造的标签训练辅助 heads，并保留论文描述的辅助表征结构。
+仓库聚焦可复现的公开研究路径，不分发数据集文件和部署相关基础设施。公开版本使用两套公共数据中可构造的标签训练辅助 heads，并采用相同的辅助表征设计。
 
-## 公平比较协议
+## 实验设置
 
-离线实验统一控制第一阶段模型与纠偏训练协议：
+离线实验统一使用以下第一阶段模型和纠偏训练设置：
 
 - 所有 backbone 使用相同的特征预处理和 80%/10%/10% 数据划分；
 - 稀疏特征 embedding 维度统一为 16；
@@ -49,7 +49,7 @@ DADF 是一个轻量级的二阶段观看时长纠偏框架。它冻结已经训
 - DADF 训练期间冻结第一阶段 checkpoint；
 - 配对实验使用相同的数据划分和随机种子。
 
-因此，同一 backbone 组内的差异主要来自二阶段纠偏模块，而不是基础模型容量或数据处理方式不同。
+这些设置保证同一 backbone 组内不同方法使用一致的模型容量和数据处理方式。
 
 ## 支持的第一阶段预测器
 
@@ -63,7 +63,7 @@ DADF 是一个轻量级的二阶段观看时长纠偏框架。它冻结已经训
 | `d2co` | 时长相关成分修正 |
 | `egmn` | 指数-高斯混合分布建模 |
 
-## 与论文一致的默认配置
+## 默认配置
 
 | 配置 | KuaiRec | WeChat21 |
 |---|---:|---:|
@@ -84,7 +84,7 @@ DADF 是一个轻量级的二阶段观看时长纠偏框架。它冻结已经训
 - 基于验证集 XAUC 早停；
 - 损失权重 `(变换空间, 原始空间, 正则, 辅助任务) = (1.0, 0.8, 0.05, 0.10)`。
 
-逆变换流程按照论文报告的数值范围，对变换空间预测和恢复后的纠偏因子进行裁剪。
+逆变换时会对变换空间预测和恢复后的纠偏因子进行数值裁剪。
 
 ## 环境安装
 
@@ -106,7 +106,7 @@ pip install -r requirements.txt
 
 ## 运行 DADF
 
-在 KuaiRec 上运行与论文一致的 WLR 配置：
+在 KuaiRec 上运行标准 WLR 配置：
 
 ```bash
 DATASET=kuairec DEVICE=cuda:0 bash run_DADF_wlr.sh
@@ -131,11 +131,11 @@ python model/dadf/train.py --base_model egmn --dataset_name kuairec --full-data 
 运行程序报告：
 
 - **MAE**：越低越好；
-- **XAUC**：论文采用的严格样本对排序一致率，越高越好。
+- **XAUC**：严格样本对排序一致率，越高越好。
 
-在论文报告的 14 个 backbone-数据集组合中，相比对应的冻结 backbone，DADF 平均降低 MAE **4.33%**，平均提升 XAUC **4.01%**。每次运行的随机种子和指标会写入本地日志目录。
+在 14 个 backbone-数据集组合中，相比对应的冻结 backbone，DADF 平均降低 MAE **4.33%**，平均提升 XAUC **4.01%**。每次运行的随机种子和指标会写入本地日志目录。
 
-论文在 WLR backbone 上对三个核心组件进行消融：
+WLR backbone 上包含三个核心组件的消融实验：
 
 | 变体 | 移除内容 |
 |---|---|
@@ -143,7 +143,7 @@ python model/dadf/train.py --base_model egmn --dataset_name kuairec --full-data 
 | `w/o Factor` | 时长索引专家路由，改为共享纠偏映射 |
 | `w/o Aux.` | 辅助行为表征 |
 
-论文实验中，移除任一组件都会使两套公共数据上的 MAE/XAUC 下降。代码通过 `--shared_correction` 提供路由消融，通过 `--no_aux_targets` 提供辅助表征消融。
+移除任一组件都会使两套公共数据上的 MAE/XAUC 下降。代码通过 `--shared_correction` 提供路由消融，通过 `--no_aux_targets` 提供辅助表征消融。
 
 ## 目录结构
 
@@ -162,8 +162,7 @@ run_DADF_wlr.sh    WLR 实验入口
 @misc{yang2026dadf,
   title  = {DADF: A Distribution-Aware Debiasing Framework for Watch-Time Regression in Recommender Systems},
   author = {Yiqing Yang and Xinlong Zhao and Zhao Liu and Xiao Lv and Ruiming Tang and Kun Gai},
-  year   = {2026},
-  note   = {Manuscript}
+  year   = {2026}
 }
 ```
 
