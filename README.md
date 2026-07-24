@@ -2,23 +2,93 @@
 
 Reference implementation for **DADF: A Distribution-Aware Debiasing Framework for Watch-Time Regression in Recommender Systems**.
 
+[中文说明](README_zh.md)
+
+## Overview
+
+DADF is a lightweight second-stage correction framework for watch-time regression. It keeps a trained first-stage predictor frozen and estimates the inference-time-predictable part of its conditional residual. The corrected prediction preserves the original scalar interface:
+
+```text
+corrected_watch_time = base_watch_time * correction_factor
+```
+
+Here, debiasing means correcting predictable conditional residuals rather than globally recalibrating the first-stage model. Video duration indexes heterogeneous regimes; it is not treated as the sole cause of prediction error.
+
 ## Method
 
-DADF applies a second-stage multiplicative correction to a frozen watch-time predictor:
+The implementation follows the three components in the paper:
 
-\[
-\hat{Y}=\hat{Y}_0\hat{B}.
-\]
+1. **Regime-Specific Target Transformation** applies a learnable group-level Box-Cox transform to the multiplicative correction target.
+2. **Duration-Indexed Expert Routing** assigns each sample to a duration regime and uses deterministic hard routing to evaluate one correction expert.
+3. **Auxiliary Behavioral Representation** expands auxiliary logits with fixed nonlinear responses and fuses them with auxiliary tower states and the shared correction context.
 
-The implementation contains the three components described in the paper:
+The correction objective contains four terms:
 
-1. **Regime-Specific Target Transformation** uses a learnable group-level Box–Cox transform for the correction target.
-2. **Duration-Indexed Expert Routing** uses deterministic hard routing to select one correction expert per sample.
-3. **Auxiliary Behavioral Representation** fuses auxiliary logits and tower representations with the shared correction context.
+- transformed-space MSE;
+- original watch-time Huber loss;
+- regime-level moment regularization;
+- auxiliary-task BCE loss.
 
-Training combines transformed-space MSE, original-space Huber loss, transformation moment regularization, and auxiliary BCE loss. Auxiliary labels are training targets only; inference uses model outputs and inference-time features.
+The first-stage prediction is detached when the correction target is constructed. Auxiliary labels provide training supervision only; inference uses predicted auxiliary logits, tower representations, and other inference-time features.
 
-## Requirements
+## Public Implementation Scope
+
+This repository provides the public-benchmark implementation used to study the DADF architecture on KuaiRec and WeChat21. It includes data preprocessing, seven first-stage predictors, the DADF correction module, training, and MAE/XAUC evaluation.
+
+The repository focuses on the reproducible research path. Dataset files and deployment-specific infrastructure are not distributed here. The public auxiliary heads are trained from labels available in the two public datasets and implement the same representation pattern described in the paper.
+
+## Fair Comparison Protocol
+
+The offline comparison controls the first-stage model and correction protocol:
+
+- all backbones use the same feature preprocessing and the same 80%/10%/10% data split;
+- sparse feature embeddings use 16 dimensions;
+- backbone MLP widths are 256, 128, and 64 where applicable;
+- each first-stage backbone is selected on the validation split before correction training;
+- Base and DADF within a backbone group start from the same first-stage checkpoint;
+- the first-stage checkpoint is frozen during DADF correction training;
+- matched runs use the same split and random seed.
+
+This setup keeps model capacity and data treatment comparable, so the within-backbone difference reflects the correction stage rather than a weaker base model.
+
+## Supported First-Stage Predictors
+
+| Name | First-stage formulation |
+|---|---|
+| `vr` | Direct value regression |
+| `wlr` | Weighted logistic regression |
+| `tpm` | Tree-based ordinal watch-time modeling |
+| `d2q` | Duration-aware quantile regression |
+| `cread` | Error-adaptive discretization and restoration |
+| `d2co` | Duration-related component correction |
+| `egmn` | Exponential-Gaussian mixture modeling |
+
+## Manuscript-Aligned Defaults
+
+| Setting | KuaiRec | WeChat21 |
+|---|---:|---:|
+| Duration regimes | 4 | 3 |
+| Regime construction | Equal-frequency | Equal-frequency |
+| Batch size | 2048 | 2048 |
+| Correction hidden size | 64 | 64 |
+| Maximum correction epochs | 25 | 30 |
+| Early-stopping patience | 6 | 6 |
+
+Common defaults:
+
+- hard duration routing;
+- group-level learnable Box-Cox parameters;
+- uniform regime weighting;
+- frozen first-stage predictor;
+- seven auxiliary watch-time targets;
+- validation XAUC for early stopping;
+- loss weights `(transformed, absolute, regularization, auxiliary) = (1.0, 0.8, 0.05, 0.10)`.
+
+The inverse path clips the transformed prediction and recovered correction factor to the numerical ranges reported in the paper.
+
+## Installation
+
+Requirements:
 
 - Python 3.8+
 - PyTorch 1.12+
@@ -27,40 +97,73 @@ Training combines transformed-space MSE, original-space Huber loss, transformati
 pip install -r requirements.txt
 ```
 
-## Data
+## Dataset Preparation
 
-Download KuaiRec or WeChat21 from their official sources and follow [`dataset/README.md`](dataset/README.md). Raw and processed data are excluded from version control.
+Download the datasets from their official sources:
 
-## Run
+- [KuaiRec](https://kuairec.com/)
+- [WeChatBigData Challenge 2021](https://algo.weixin.qq.com/)
 
-The standard WLR experiment is:
+Follow [`dataset/README.md`](dataset/README.md) to place and preprocess the raw files. Raw and processed dataset artifacts are excluded from version control.
+
+## Running DADF
+
+Run the manuscript-aligned WLR configuration on KuaiRec:
 
 ```bash
 DATASET=kuairec DEVICE=cuda:0 bash run_DADF_wlr.sh
 ```
 
-Use `DATASET=wechat21` for WeChat21 or `DATASET=all` for both datasets. The direct entry point is:
+Run on WeChat21 or both datasets:
+
+```bash
+DATASET=wechat21 DEVICE=cuda:0 bash run_DADF_wlr.sh
+DATASET=all DEVICE=cuda:0 bash run_DADF_wlr.sh
+```
+
+The direct training entry point supports all first-stage predictors:
 
 ```bash
 python model/dadf/train.py --help
+python model/dadf/train.py --base_model egmn --dataset_name kuairec --full-data --device cuda:0
 ```
 
-The manuscript-aligned defaults freeze the first-stage predictor during correction training, use equal-frequency duration regimes, group-level transformation parameters, hard routing, auxiliary representations, and validation-XAUC early stopping.
+## Evaluation and Reported Results
 
-## Supported First-Stage Predictors
+The runner reports:
 
-`vr`, `wlr`, `tpm`, `d2q`, `cread`, `d2co`, and `egmn`.
+- **MAE**, where lower is better;
+- **XAUC**, the strict pairwise ordering agreement used in the paper, where higher is better.
 
-## Evaluation
+Across the 14 backbone-dataset settings reported in the manuscript, DADF reduces MAE by **4.33%** and improves XAUC by **4.01%** on average relative to the corresponding frozen backbone. Per-run seeds and metrics are written to the local log directory.
 
-The runner reports MAE and XAUC using the definitions in the paper. Random seeds and per-run metrics are written to the local log directory.
+The WLR ablation evaluates the three paper components:
+
+| Variant | Removed component |
+|---|---|
+| `w/o Dist.` | Regime-specific target transformation |
+| `w/o Factor` | Duration-indexed routing, replaced by a shared correction mapping |
+| `w/o Aux.` | Auxiliary behavioral representation |
+
+All three removals reduce MAE/XAUC performance on both public datasets in the reported study. The code exposes `--shared_correction` for the routing ablation and `--no_aux_targets` for the auxiliary ablation.
+
+## Repository Layout
+
+```text
+model/dadf/        DADF network, transforms, losses, adapters, and training
+model/             First-stage predictors and shared layers
+dataloader/        Dataset loaders
+dataset/           Public-dataset preprocessing
+tests/             Public method-contract tests
+run_DADF_wlr.sh    WLR experiment entry point
+```
 
 ## Citation
 
 ```bibtex
 @misc{yang2026dadf,
   title  = {DADF: A Distribution-Aware Debiasing Framework for Watch-Time Regression in Recommender Systems},
-  author = {Yiqing Yang and Xinlong Zhao and Zhao Liu and Xiao Lv and Ruiming Tang},
+  author = {Yiqing Yang and Xinlong Zhao and Zhao Liu and Xiao Lv and Ruiming Tang and Kun Gai},
   year   = {2026},
   note   = {Manuscript}
 }

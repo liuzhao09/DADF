@@ -2,23 +2,91 @@
 
 论文 **DADF: A Distribution-Aware Debiasing Framework for Watch-Time Regression in Recommender Systems** 的参考实现。
 
-## 方法
+[English README](README.md)
 
-DADF 在冻结的第一阶段观看时长预测器上进行二阶段乘性修正：
+## 方法概览
 
-\[
-\hat{Y}=\hat{Y}_0\hat{B}.
-\]
+DADF 是一个轻量级的二阶段观看时长纠偏框架。它冻结已经训练完成的第一阶段预测器，仅学习其中可由推理时信号预测的条件残差。修正后的输出保持原有标量接口：
+
+```text
+修正后观看时长 = 第一阶段观看时长预测 * 纠偏因子
+```
+
+本文中的“纠偏”特指修正可预测的条件残差，而不是对第一阶段模型进行全局重校准。视频时长用于索引不同的分布区间，但不被视为预测误差的唯一原因。
+
+## 核心模块
 
 代码实现与论文一致的三个组件：
 
-1. **分组目标变换**：对纠偏目标应用可学习的组级 Box–Cox 变换。
-2. **时长索引专家路由**：通过确定性 hard routing 为每个样本选择一个纠偏专家。
-3. **辅助行为表征**：将辅助任务 logit、tower 表征与共享纠偏上下文融合。
+1. **分组目标变换（Regime-Specific Target Transformation）**：对乘性纠偏目标应用可学习的组级 Box-Cox 变换。
+2. **时长索引专家路由（Duration-Indexed Expert Routing）**：按视频时长确定所属区间，并通过 hard routing 仅执行一个纠偏专家。
+3. **辅助行为表征（Auxiliary Behavioral Representation）**：对辅助任务 logit 进行固定非线性展开，再与辅助 tower 表征和共享纠偏上下文融合。
 
-训练目标由变换空间 MSE、原始空间 Huber、变换矩正则和辅助 BCE 组成。辅助标签仅用于训练监督，推理只使用模型输出和推理时可用特征。
+纠偏训练目标包含四项：
 
-## 环境
+- 变换空间 MSE；
+- 原始观看时长空间 Huber loss；
+- 分组统计矩正则；
+- 辅助任务 BCE loss。
+
+构造纠偏目标时会对第一阶段预测执行 stop-gradient。辅助标签只提供训练监督；推理阶段使用预测得到的辅助 logit、tower 表征以及其他推理时可用特征。
+
+## 公开实现范围
+
+本仓库提供用于 KuaiRec 和 WeChat21 公共数据集实验的 DADF 参考实现，包括数据预处理、七种第一阶段预测器、DADF 纠偏模块、训练流程，以及 MAE/XAUC 评估。
+
+仓库聚焦可复现的公开研究路径，不分发数据集文件和部署相关基础设施。公开版本使用两套公共数据中可构造的标签训练辅助 heads，并保留论文描述的辅助表征结构。
+
+## 公平比较协议
+
+离线实验统一控制第一阶段模型与纠偏训练协议：
+
+- 所有 backbone 使用相同的特征预处理和 80%/10%/10% 数据划分；
+- 稀疏特征 embedding 维度统一为 16；
+- 适用的 backbone MLP 隐藏层宽度统一为 256、128 和 64；
+- 每个第一阶段 backbone 均先在验证集上选择 checkpoint，再进行纠偏训练；
+- 同一 backbone 下的 Base 与 DADF 从完全相同的第一阶段 checkpoint 出发；
+- DADF 训练期间冻结第一阶段 checkpoint；
+- 配对实验使用相同的数据划分和随机种子。
+
+因此，同一 backbone 组内的差异主要来自二阶段纠偏模块，而不是基础模型容量或数据处理方式不同。
+
+## 支持的第一阶段预测器
+
+| 名称 | 第一阶段建模方式 |
+|---|---|
+| `vr` | 直接数值回归 |
+| `wlr` | 加权逻辑回归 |
+| `tpm` | 基于树结构的有序观看时长建模 |
+| `d2q` | 时长感知分位数回归 |
+| `cread` | 误差自适应离散化与数值恢复 |
+| `d2co` | 时长相关成分修正 |
+| `egmn` | 指数-高斯混合分布建模 |
+
+## 与论文一致的默认配置
+
+| 配置 | KuaiRec | WeChat21 |
+|---|---:|---:|
+| 时长区间数量 | 4 | 3 |
+| 区间构造方式 | 等频 | 等频 |
+| Batch size | 2048 | 2048 |
+| 纠偏隐层维度 | 64 | 64 |
+| 最大纠偏训练轮数 | 25 | 30 |
+| 早停 patience | 6 | 6 |
+
+两套数据共同使用以下默认设置：
+
+- hard duration routing；
+- 每个区间独立的可学习 Box-Cox 参数；
+- 各区间均匀加权；
+- 冻结第一阶段预测器；
+- 七个观看时长辅助目标；
+- 基于验证集 XAUC 早停；
+- 损失权重 `(变换空间, 原始空间, 正则, 辅助任务) = (1.0, 0.8, 0.05, 0.10)`。
+
+逆变换流程按照论文报告的数值范围，对变换空间预测和恢复后的纠偏因子进行裁剪。
+
+## 环境安装
 
 - Python 3.8+
 - PyTorch 1.12+
@@ -27,40 +95,73 @@ DADF 在冻结的第一阶段观看时长预测器上进行二阶段乘性修正
 pip install -r requirements.txt
 ```
 
-## 数据
+## 数据准备
 
-从官方渠道下载 KuaiRec 或 WeChat21，并按照 [`dataset/README.md`](dataset/README.md) 准备数据。原始数据和处理后的数据文件不纳入版本控制。
+从官方渠道下载数据：
 
-## 运行
+- [KuaiRec](https://kuairec.com/)
+- [WeChatBigData Challenge 2021](https://algo.weixin.qq.com/)
 
-WLR 标准实验：
+按照 [`dataset/README.md`](dataset/README.md) 放置并预处理原始文件。原始数据和处理后的数据文件均不纳入版本控制。
+
+## 运行 DADF
+
+在 KuaiRec 上运行与论文一致的 WLR 配置：
 
 ```bash
 DATASET=kuairec DEVICE=cuda:0 bash run_DADF_wlr.sh
 ```
 
-将 `DATASET` 设置为 `wechat21` 可运行 WeChat21，设置为 `all` 可运行两套数据。直接入口为：
+运行 WeChat21 或同时运行两套数据：
+
+```bash
+DATASET=wechat21 DEVICE=cuda:0 bash run_DADF_wlr.sh
+DATASET=all DEVICE=cuda:0 bash run_DADF_wlr.sh
+```
+
+直接训练入口支持所有第一阶段预测器：
 
 ```bash
 python model/dadf/train.py --help
+python model/dadf/train.py --base_model egmn --dataset_name kuairec --full-data --device cuda:0
 ```
 
-与论文一致的默认设置包括：纠偏训练时冻结第一阶段预测器、等频时长分组、组级变换参数、hard routing、辅助行为表征，以及基于验证集 XAUC 的早停。
+## 评估与论文结果摘要
 
-## 支持的第一阶段预测器
+运行程序报告：
 
-`vr`、`wlr`、`tpm`、`d2q`、`cread`、`d2co` 和 `egmn`。
+- **MAE**：越低越好；
+- **XAUC**：论文采用的严格样本对排序一致率，越高越好。
 
-## 评估
+在论文报告的 14 个 backbone-数据集组合中，相比对应的冻结 backbone，DADF 平均降低 MAE **4.33%**，平均提升 XAUC **4.01%**。每次运行的随机种子和指标会写入本地日志目录。
 
-运行程序按照论文定义报告 MAE 和 XAUC，并在本地日志目录记录随机种子与每次运行的指标。
+论文在 WLR backbone 上对三个核心组件进行消融：
+
+| 变体 | 移除内容 |
+|---|---|
+| `w/o Dist.` | 分组目标变换 |
+| `w/o Factor` | 时长索引专家路由，改为共享纠偏映射 |
+| `w/o Aux.` | 辅助行为表征 |
+
+论文实验中，移除任一组件都会使两套公共数据上的 MAE/XAUC 下降。代码通过 `--shared_correction` 提供路由消融，通过 `--no_aux_targets` 提供辅助表征消融。
+
+## 目录结构
+
+```text
+model/dadf/        DADF 网络、变换、损失、适配器与训练入口
+model/             第一阶段预测器和共享网络层
+dataloader/        数据加载器
+dataset/           公共数据集预处理
+tests/             论文方法契约测试
+run_DADF_wlr.sh    WLR 实验入口
+```
 
 ## 引用
 
 ```bibtex
 @misc{yang2026dadf,
   title  = {DADF: A Distribution-Aware Debiasing Framework for Watch-Time Regression in Recommender Systems},
-  author = {Yiqing Yang and Xinlong Zhao and Zhao Liu and Xiao Lv and Ruiming Tang},
+  author = {Yiqing Yang and Xinlong Zhao and Zhao Liu and Xiao Lv and Ruiming Tang and Kun Gai},
   year   = {2026},
   note   = {Manuscript}
 }
