@@ -127,6 +127,23 @@ Run a backbone without constructing or training DADF:
 BASE_MODEL=wlr MODE=base DATASET=kuairec DEVICE=cuda:0 bash run_DADF.sh
 ```
 
+Run all seven backbones concurrently in the background and distribute them
+round-robin across two GPUs:
+
+```bash
+bash run_all_backbone.sh
+```
+
+By default, this uses `cuda:0 cuda:1`, a maximum of 100 epochs, and early
+stopping patience 6. Each run writes to
+`logs/all_backbones_<timestamp>/base_earlystop_<backbone>.log`. These defaults
+can be overridden without editing the script:
+
+```bash
+DEVICES="cuda:0 cuda:1" BASE_EPOCH=100 PATIENCE=6 \
+  bash run_all_backbone.sh
+```
+
 Override the backbone MLP dimensions with a space-separated list:
 
 ```bash
