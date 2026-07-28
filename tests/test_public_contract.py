@@ -5,8 +5,9 @@ from unittest import mock
 import numpy as np
 import torch
 
+from model import Cread, D2Q, EGMN, TPM, WideAndDeep
 from model.dadf.network import DADF
-from model.dadf.train import get_args
+from model.dadf.train import _parameter_counts, get_args
 from model.dadf.transforms import boxcox_inverse, boxcox_transform
 from utils import eval_xauc
 
@@ -65,6 +66,79 @@ class PublicContractTest(unittest.TestCase):
         self.assertEqual(args.kurtosis_weight, 0.0)
         self.assertFalse(args.bucket_reweighting)
         self.assertFalse(args.backbone_autotune)
+        self.assertFalse(args.base_only)
+        self.assertEqual(args.base_mlp_dims, [256, 128, 64])
+
+    def test_dense_parameter_count_excludes_embeddings(self):
+        network = torch.nn.Sequential(
+            torch.nn.Embedding(10, 4),
+            torch.nn.Linear(4, 2),
+        )
+        total, dense = _parameter_counts(network)
+        self.assertEqual(total, 50)
+        self.assertEqual(dense, 10)
+
+    def test_kuairec_default_dense_parameter_contract(self):
+        description = [
+            ("play_time", -1, "label"),
+            ("duration", -1, "ctn"),
+            ("user_id", 4, "spr"),
+            ("video_id", 5, "spr"),
+            ("duration_bucket", 50, "spr"),
+        ]
+        description.extend(
+            ("feature_{}".format(index), 3, "spr")
+            for index in range(32)
+        )
+
+        default_dims = (256, 128, 64)
+        models = {
+            "vr": WideAndDeep(description, 16, default_dims, 0.0),
+            "wlr": WideAndDeep(description, 16, default_dims, 0.0),
+            "tpm": TPM(description, 31, 16, default_dims, 0.0),
+            "d2q": D2Q(description, 16, default_dims, 0.0),
+            "cread": Cread(description, 16, default_dims, (32,), 50, 0.0),
+            "d2co": WideAndDeep(description, 16, default_dims, 0.0),
+            "egmn": EGMN(description, 16, default_dims, 0.2),
+        }
+        expected_backbone_dense = {
+            "vr": 185730,
+            "wlr": 185730,
+            "tpm": 187936,
+            "d2q": 185986,
+            "cread": 294771,
+            "d2co": 185730,
+            "egmn": 188001,
+        }
+        expected_combined_dense = {
+            "vr": 253649,
+            "wlr": 253649,
+            "tpm": 247663,
+            "d2q": 245713,
+            "cread": 354498,
+            "d2co": 253649,
+            "egmn": 255920,
+        }
+        hidden_backbones = {"vr", "wlr", "d2co", "egmn"}
+        auxiliary_targets = tuple("aux_{}".format(index) for index in range(7))
+
+        for name, backbone in models.items():
+            dadf = DADF(
+                user_vocab_size=4,
+                video_vocab_size=5,
+                bucket_num=4,
+                hidden_dim_base=64 if name in hidden_backbones else 0,
+                aux_target_names=auxiliary_targets,
+            )
+            with self.subTest(backbone=name):
+                self.assertEqual(
+                    _parameter_counts(backbone)[1],
+                    expected_backbone_dense[name],
+                )
+                self.assertEqual(
+                    _parameter_counts(backbone, dadf)[1],
+                    expected_combined_dense[name],
+                )
 
     def test_default_routing_is_duration_indexed(self):
         network = DADF(

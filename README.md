@@ -108,25 +108,62 @@ Follow [`dataset/README.md`](dataset/README.md) to place and preprocess the raw 
 
 ## Running DADF
 
-Run the standard WLR configuration on KuaiRec:
+Run the standard WLR+DADF configuration on KuaiRec:
 
 ```bash
-DATASET=kuairec DEVICE=cuda:0 bash run_DADF_wlr.sh
+BASE_MODEL=wlr MODE=dadf DATASET=kuairec DEVICE=cuda:0 bash run_DADF.sh
 ```
 
-Run on WeChat21 or both datasets:
+Select any supported backbone with `BASE_MODEL`:
 
 ```bash
-DATASET=wechat21 DEVICE=cuda:0 bash run_DADF_wlr.sh
-DATASET=all DEVICE=cuda:0 bash run_DADF_wlr.sh
+BASE_MODEL=egmn MODE=dadf DATASET=kuairec DEVICE=cuda:0 bash run_DADF.sh
+BASE_MODEL=cread MODE=dadf DATASET=wechat21 DEVICE=cuda:0 bash run_DADF.sh
 ```
 
-The direct training entry point supports all first-stage predictors:
+Run a backbone without constructing or training DADF:
+
+```bash
+BASE_MODEL=wlr MODE=base DATASET=kuairec DEVICE=cuda:0 bash run_DADF.sh
+```
+
+Override the backbone MLP dimensions with a space-separated list:
+
+```bash
+BASE_MODEL=wlr MODE=base BASE_MLP_DIMS="354 128 64" \
+  DATASET=kuairec DEVICE=cuda:0 bash run_DADF.sh
+```
+
+The direct training entry point provides the same controls:
 
 ```bash
 python model/dadf/train.py --help
-python model/dadf/train.py --base_model egmn --dataset_name kuairec --full-data --device cuda:0
+python model/dadf/train.py --base_model egmn --base_mlp_dims 256 128 64 \
+  --dataset_name kuairec --full-data --device cuda:0
+python model/dadf/train.py --base_model egmn --base_only --base_epoch 30 \
+  --base_mlp_dims 354 128 64 --dataset_name kuairec --full-data --device cuda:0
 ```
+
+### Dense-Capacity Control
+
+The training entry point reports unique total parameters and dense parameters.
+Dense parameters exclude embedding tables. Under the default KuaiRec feature
+schema and DADF configuration, the following enlarged first-layer dimensions
+match the dense capacity of the corresponding backbone+DADF model within 0.1%:
+
+| Backbone | Backbone dense | Backbone+DADF dense | Matched `BASE_MLP_DIMS` | Matched dense |
+|---|---:|---:|---|---:|
+| VR | 185,730 | 253,649 | `354 128 64` | 253,448 |
+| WLR | 185,730 | 253,649 | `354 128 64` | 253,448 |
+| TPM | 187,936 | 247,663 | `342 128 64` | 247,448 |
+| D2Q | 185,986 | 245,713 | `342 128 64` | 245,498 |
+| CREAD | 294,771 | 354,498 | `342 128 64` | 354,283 |
+| D2CO | 185,730 | 253,649 | `354 128 64` | 253,448 |
+| EGMN | 188,001 | 255,920 | `354 128 64` | 255,817 |
+
+The exact count printed by a run is authoritative because preprocessing may
+drop constant fields. Use the same split, seed, optimization budget, and
+validation protocol when comparing a capacity-matched backbone with DADF.
 
 ## Evaluation and Reported Results
 
@@ -166,7 +203,7 @@ model/             First-stage predictors and shared layers
 dataloader/        Dataset loaders
 dataset/           Public-dataset preprocessing
 tests/             Public method-contract tests
-run_DADF_wlr.sh    WLR experiment entry point
+run_DADF.sh        Generic backbone and DADF experiment launcher
 ```
 
 ## Citation

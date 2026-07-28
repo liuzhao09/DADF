@@ -106,25 +106,60 @@ pip install -r requirements.txt
 
 ## 运行 DADF
 
-在 KuaiRec 上运行标准 WLR 配置：
+在 KuaiRec 上运行标准 WLR+DADF 配置：
 
 ```bash
-DATASET=kuairec DEVICE=cuda:0 bash run_DADF_wlr.sh
+BASE_MODEL=wlr MODE=dadf DATASET=kuairec DEVICE=cuda:0 bash run_DADF.sh
 ```
 
-运行 WeChat21 或同时运行两套数据：
+通过 `BASE_MODEL` 选择任意受支持的 backbone：
 
 ```bash
-DATASET=wechat21 DEVICE=cuda:0 bash run_DADF_wlr.sh
-DATASET=all DEVICE=cuda:0 bash run_DADF_wlr.sh
+BASE_MODEL=egmn MODE=dadf DATASET=kuairec DEVICE=cuda:0 bash run_DADF.sh
+BASE_MODEL=cread MODE=dadf DATASET=wechat21 DEVICE=cuda:0 bash run_DADF.sh
 ```
 
-直接训练入口支持所有第一阶段预测器：
+只训练 backbone，完全跳过 DADF 构建与训练：
+
+```bash
+BASE_MODEL=wlr MODE=base DATASET=kuairec DEVICE=cuda:0 bash run_DADF.sh
+```
+
+通过空格分隔的维度列表扩展 backbone MLP：
+
+```bash
+BASE_MODEL=wlr MODE=base BASE_MLP_DIMS="354 128 64" \
+  DATASET=kuairec DEVICE=cuda:0 bash run_DADF.sh
+```
+
+直接训练入口提供相同控制：
 
 ```bash
 python model/dadf/train.py --help
-python model/dadf/train.py --base_model egmn --dataset_name kuairec --full-data --device cuda:0
+python model/dadf/train.py --base_model egmn --base_mlp_dims 256 128 64 \
+  --dataset_name kuairec --full-data --device cuda:0
+python model/dadf/train.py --base_model egmn --base_only --base_epoch 30 \
+  --base_mlp_dims 354 128 64 --dataset_name kuairec --full-data --device cuda:0
 ```
+
+### Dense 参数量对照
+
+训练入口会输出去重后的总参数量与 dense 参数量，其中 dense 参数不包含
+embedding table。在 KuaiRec 默认特征和 DADF 配置下，仅扩展 backbone 第一层
+即可在 0.1% 误差内匹配对应 Backbone+DADF 的 dense 参数量：
+
+| Backbone | Backbone dense | Backbone+DADF dense | 匹配的 `BASE_MLP_DIMS` | 匹配后 dense |
+|---|---:|---:|---|---:|
+| VR | 185,730 | 253,649 | `354 128 64` | 253,448 |
+| WLR | 185,730 | 253,649 | `354 128 64` | 253,448 |
+| TPM | 187,936 | 247,663 | `342 128 64` | 247,448 |
+| D2Q | 185,986 | 245,713 | `342 128 64` | 245,498 |
+| CREAD | 294,771 | 354,498 | `342 128 64` | 354,283 |
+| D2CO | 185,730 | 253,649 | `354 128 64` | 253,448 |
+| EGMN | 188,001 | 255,920 | `354 128 64` | 255,817 |
+
+若预处理删除了常量特征，应以实际运行日志打印的参数量为准。容量对照实验应
+使用相同的数据划分、随机种子、训练预算和验证集选择协议。
 
 ## 评估与论文结果摘要
 
@@ -164,7 +199,7 @@ model/             第一阶段预测器和共享网络层
 dataloader/        数据加载器
 dataset/           公共数据集预处理
 tests/             论文方法契约测试
-run_DADF_wlr.sh    WLR 实验入口
+run_DADF.sh        通用 backbone 与 DADF 实验入口
 ```
 
 ## 引用

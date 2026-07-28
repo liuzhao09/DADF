@@ -39,6 +39,13 @@ def get_args():
     parser.add_argument('--base_model',   default='wlr',
                         choices=list_supported_models(),
                         help='基础模型: ' + str(list_supported_models()))
+    parser.add_argument('--base_mlp_dims', type=int, nargs='+',
+                        default=[256, 128, 64],
+                        help='Backbone 主干 MLP 维度，例如: --base_mlp_dims 512 256 128')
+    parser.add_argument('--base_only', action='store_true',
+                        help='仅训练和评估 backbone，跳过全部 DADF 相关计算')
+    parser.add_argument('--base_epoch', type=int, default=30,
+                        help='--base_only 模式下 backbone 的最大训练轮数')
     parser.add_argument('--dataset_name', default='kuairec')
     parser.add_argument('--dataset_path', default=_DEFAULT_DATASET)
     parser.add_argument('--device',       default='cuda:0')
@@ -393,17 +400,18 @@ def compute_log_proxy_mean(dataloader_train):
     return log_mean
 
 def build_model_and_adapter(args, description, device, dataloaders=None):
+    base_mlp_dims = tuple(args.base_mlp_dims)
     if args.base_model in ('vr', 'wlr', 'wd'):
         model = WideAndDeep(
             description, embed_dim=16,
-            mlp_dims=(256, 128, 64), dropout=0.0,
+            mlp_dims=base_mlp_dims, dropout=0.0,
         ).to(device)
         adapter = build_adapter(args.base_model, model)
 
     elif args.base_model == 'egmn':
         model = EGMN(
             description, embed_dim=16,
-            share_mlp_dims=(256, 128, 64), dropout=0.2,
+            share_mlp_dims=base_mlp_dims, dropout=0.2,
         ).to(device)
         adapter = build_adapter(args.base_model, model)
 
@@ -412,7 +420,7 @@ def build_model_and_adapter(args, description, device, dataloaders=None):
         from utils import get_playtime_percentiles_range
         model = TPM(
             description, class_num=args.wr_bucknum - 1,
-            embed_dim=16, mlp_dims=(256, 128, 64), dropout=0.0,
+            embed_dim=16, mlp_dims=base_mlp_dims, dropout=0.0,
         ).to(device)
         adapter = build_adapter('tpm', model)
         if dataloaders is not None:
@@ -427,7 +435,7 @@ def build_model_and_adapter(args, description, device, dataloaders=None):
         import os
         model = D2Q(
             description, embed_dim=16,
-            mlp_dims=(256, 128, 64), dropout=0.0,
+            mlp_dims=base_mlp_dims, dropout=0.0,
         ).to(device)
         adapter = build_adapter('d2q', model)
         _pkl_suffix = getattr(args, 'pkl_suffix', '')
@@ -454,7 +462,7 @@ def build_model_and_adapter(args, description, device, dataloaders=None):
             split_nodes = None
         model = Cread(
             description, embed_dim=16,
-            share_mlp_dims=(256, 128, 64),
+            share_mlp_dims=base_mlp_dims,
             output_mlp_dims=(32,),
             head_num=M, dropout=0.0,
         ).to(device)
@@ -466,7 +474,7 @@ def build_model_and_adapter(args, description, device, dataloaders=None):
         from model.framework_utils import get_gmm_mean
         model = WideAndDeep(
             description, embed_dim=16,
-            mlp_dims=(256, 128, 64), dropout=0.0,
+            mlp_dims=base_mlp_dims, dropout=0.0,
         ).to(device)
         adapter = build_adapter('d2co', model)
         if dataloaders is not None:
@@ -477,6 +485,59 @@ def build_model_and_adapter(args, description, device, dataloaders=None):
     else:
         raise ValueError('Unknown base_model: {}'.format(args.base_model))
     return model, adapter
+
+
+def _unique_parameters(*modules):
+    parameters = {}
+    for module in modules:
+        if module is None:
+            continue
+        for parameter in module.parameters():
+            parameters[id(parameter)] = parameter
+    return parameters
+
+
+def _embedding_parameter_ids(*modules):
+    parameter_ids = set()
+    for module in modules:
+        if module is None:
+            continue
+        for child in module.modules():
+            if isinstance(child, torch.nn.Embedding):
+                parameter_ids.update(id(parameter) for parameter in child.parameters())
+    return parameter_ids
+
+
+def _parameter_counts(*modules):
+    parameters = _unique_parameters(*modules)
+    embedding_ids = _embedding_parameter_ids(*modules)
+    total = sum(parameter.numel() for parameter in parameters.values())
+    dense = sum(
+        parameter.numel()
+        for parameter_id, parameter in parameters.items()
+        if parameter_id not in embedding_ids
+    )
+    return total, dense
+
+
+def report_parameter_counts(backbone, dadf_model=None):
+    backbone_total, backbone_dense = _parameter_counts(backbone)
+    print('Parameters | backbone total={:,} dense={:,}'.format(
+        backbone_total, backbone_dense
+    ))
+
+    if dadf_model is None:
+        return
+
+    combined_total, combined_dense = _parameter_counts(backbone, dadf_model)
+    additional_total = combined_total - backbone_total
+    additional_dense = combined_dense - backbone_dense
+    print('Parameters | DADF additional total={:,} dense={:,}'.format(
+        additional_total, additional_dense
+    ))
+    print('Parameters | backbone+DADF total={:,} dense={:,}'.format(
+        combined_total, combined_dense
+    ))
 
 def test_base(args, adapter, dataloaders, bucket_json_path=None, split='test'):
     adapter.eval()
@@ -493,12 +554,77 @@ def test_base(args, adapter, dataloaders, bucket_json_path=None, split='test'):
     durations = np.array(durations)
     mae    = mae_rescale_to_second(args.dataset_name, eval_mae(labels, scores), getattr(dataloaders, 'play_duration_max', None))
     xauc   = eval_xauc(labels, scores)
-    print('[Base only] MAE: {:.4f} | XAUC: {:.4f}'.format(mae, xauc))
+    print('{} base | MAE: {:.4f} | XAUC: {:.4f}'.format(split, mae, xauc))
     if bucket_json_path is not None:
         eval_by_duration_bucket(labels, scores, durations,
                                 getattr(dataloaders, 'play_duration_max', None),
                                 args.dataset_name, save_path=bucket_json_path)
     return mae, xauc
+
+
+def train_base_only(args, adapter, dataloaders):
+    opt_cls = torch.optim.Adam if args.base_model in ('tpm', 'cread') else torch.optim.Adagrad
+    optimizer = opt_cls(
+        adapter.parameters(),
+        lr=args.base_lr,
+        weight_decay=args.weight_decay,
+    )
+
+    best_xauc = -1.0
+    best_state = None
+    no_improve = 0
+    total_iters = len(dataloaders['train'])
+
+    for epoch in range(1, args.base_epoch + 1):
+        adapter.train()
+        epoch_loss = 0.0
+
+        for i, (features, label) in enumerate(dataloaders['train']):
+            loss = adapter.stage1_loss(features, label)
+            optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(adapter.model.parameters(), max_norm=1.0)
+            optimizer.step()
+            epoch_loss += loss.item()
+
+            if (i + 1) % args.log_interval == 0:
+                print(
+                    '  [Base] Epoch {}/{} Iter {}/{} loss={:.5f}'.format(
+                        epoch, args.base_epoch, i + 1, total_iters,
+                        epoch_loss / (i + 1),
+                    ),
+                    end='\r',
+                )
+
+        print(
+            '  [Base] Epoch {}/{} loss={:.5f}'.format(
+                epoch, args.base_epoch, epoch_loss / total_iters
+            ),
+            end='  ',
+        )
+        _, xauc = test_base(args, adapter, dataloaders, split='val')
+
+        if xauc > best_xauc:
+            best_xauc = xauc
+            no_improve = 0
+            best_state = copy.deepcopy(adapter.model.state_dict())
+        else:
+            no_improve += 1
+            if no_improve >= args.patience:
+                print(
+                    'Base early stopping at epoch {}/{} '
+                    '(XAUC no improvement for {} epochs)'.format(
+                        epoch, args.base_epoch, args.patience
+                    )
+                )
+                break
+
+    if best_state is not None:
+        adapter.model.load_state_dict(best_state)
+        print('Restored best backbone (best val XAUC={:.7f})'.format(best_xauc))
+
+    return best_xauc
+
 
 def test(args, adapter, dadf_model, dataloaders, thresholds, bucket_json_path=None, split='test'):
     adapter.eval()
@@ -856,12 +982,19 @@ def train_joint(args, adapter, dadf_model, dataloader_train, thresholds, dataloa
 
 if __name__ == '__main__':
     args = get_args()
-    aux_target_names = parse_aux_target_names(args.aux_targets) if args.use_aux_targets else tuple()
-    if args.use_aux_targets and not aux_target_names:
+    if not args.base_mlp_dims or any(dim <= 0 for dim in args.base_mlp_dims):
+        raise ValueError('--base_mlp_dims must contain positive integers')
+    if args.base_epoch <= 0:
+        raise ValueError('--base_epoch must be positive')
+
+    use_aux_targets = args.use_aux_targets and not args.base_only
+    args.use_aux_targets = use_aux_targets
+    aux_target_names = parse_aux_target_names(args.aux_targets) if use_aux_targets else tuple()
+    if use_aux_targets and not aux_target_names:
         raise ValueError('--use_aux_targets is set but --aux_targets is empty')
-    if args.use_aux_targets:
+    if use_aux_targets:
         print('Watch-time auxiliary targets enabled: {}'.format(', '.join(aux_target_names)))
-    _autotune = getattr(args, 'backbone_autotune', False)
+    _autotune = getattr(args, 'backbone_autotune', False) and not args.base_only
     if _autotune and getattr(args, 'full_data', False) and args.patience == 5:
         args.patience = 6
         print('full_data: patience auto-set to 6 (longer epochs, prevent premature stop)')
@@ -946,7 +1079,8 @@ if __name__ == '__main__':
         args.final_debias_factor_max = 1.02
         args.final_debias_factor_min = 0.98
         print('KuaiRec+D2Q: final_debias_factor=[0.98,1.02] auto-set (Phase 7 N_R4: XAUC=0.6141 > 0.6137, NOTE: single seed, N_R16 validation pending)')
-    log_dir = os.path.join(_ROOT, 'logs', args.dataset_name, 'dadf', args.base_model)
+    run_mode = 'base' if args.base_only else 'dadf'
+    log_dir = os.path.join(_ROOT, 'logs', args.dataset_name, run_mode, args.base_model)
     setup_logger(log_dir, args, 'model/dadf/train.py')
 
     if args.seed > -1:
@@ -963,6 +1097,23 @@ if __name__ == '__main__':
         pkl_suffix=getattr(args, 'pkl_suffix', ''),
     )
 
+    description = dataloaders.description
+    if args.base_only:
+        model, adapter = build_model_and_adapter(
+            args, description, device, dataloaders
+        )
+        report_parameter_counts(model)
+        train_base_only(args, adapter, dataloaders)
+        test_base(
+            args,
+            adapter,
+            dataloaders,
+            bucket_json_path=os.path.join(
+                log_dir, 'bucket_{}_base_only.json'.format(args.base_model)
+            ),
+        )
+        sys.exit(0)
+
     _DEFAULT_WARMUP = 3
     _iters_per_epoch = len(dataloaders['train'])
     _target_warmup_iters = 10000
@@ -977,7 +1128,6 @@ if __name__ == '__main__':
         print('Warmup: {} epochs ({} iters/epoch)'.format(
             args.warmup_epoch, _iters_per_epoch))
 
-    description = dataloaders.description
     thresholds  = compute_duration_thresholds(
         dataloaders['train'],
         dataset_name=args.dataset_name,
@@ -1008,12 +1158,13 @@ if __name__ == '__main__':
         lambda_init = args.lambda_init
         print('Lambda init overridden by --lambda_init: {}'.format(lambda_init))
 
-    _HIDDEN_DIMS = {'vr': 64, 'wlr': 64, 'wd': 64, 'd2co': 64, 'egmn': 64}
     if args.no_base_hidden:
         hidden_dim_base = 0
         print('Ablation: no_base_hidden=True, hidden_dim_base=0')
+    elif args.base_model in ('vr', 'wlr', 'wd', 'd2co', 'egmn'):
+        hidden_dim_base = args.base_mlp_dims[-1]
     else:
-        hidden_dim_base = _HIDDEN_DIMS.get(args.base_model, 0)
+        hidden_dim_base = 0
 
     _share = getattr(args, 'share_base_emb', False)
     _emb_layer = getattr(adapter.model, 'emb_layer', None)
@@ -1046,6 +1197,7 @@ if __name__ == '__main__':
     if dadf_model.disable_proxy_features:
         print('Ablation: --disable_proxy_features=True, f9/f10/f11 dropped from debias input')
 
+    report_parameter_counts(model, dadf_model)
     train_joint(args, adapter, dadf_model, dataloaders['train'], thresholds, dataloaders)
 
     print('\n[Ablation] Base model alone:')
