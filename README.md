@@ -127,22 +127,45 @@ Run a backbone without constructing or training DADF:
 BASE_MODEL=wlr MODE=base DATASET=kuairec DEVICE=cuda:0 bash run_DADF.sh
 ```
 
-Run all seven backbones concurrently in the background and distribute them
-round-robin across two GPUs:
+Run all seven backbones concurrently in the background. This launcher hardcodes
+`MODE=base`, so it does not construct or train DADF. By default, it uses the
+original `256 128 64` backbone widths and distributes the seven jobs round-robin
+across two GPUs:
 
 ```bash
 bash run_all_backbone.sh
 ```
 
-By default, this uses `cuda:0 cuda:1`, a maximum of 100 epochs, and early
-stopping patience 6. Each run writes to
-`logs/all_backbones_<timestamp>/base_earlystop_<backbone>.log`. These defaults
-can be overridden without editing the script:
+The default assignment is `vr/tpm/cread/egmn` on `cuda:0` and
+`wlr/d2q/d2co` on `cuda:1`. All seven jobs start immediately rather than being
+queued. Each job runs for at most 100 epochs and stops when validation XAUC has
+not improved for 6 consecutive epochs. Logs and process IDs are written to:
+
+```text
+logs/all_backbones_<timestamp>/base_earlystop_<backbone>.log
+logs/all_backbones_<timestamp>/backbone_pids.txt
+```
+
+The GPU list, training limit, patience, and other shared settings can be
+overridden without editing the script:
 
 ```bash
 DEVICES="cuda:0 cuda:1" BASE_EPOCH=100 PATIENCE=6 \
   bash run_all_backbone.sh
 ```
+
+Monitor a launch with:
+
+```bash
+RUN_DIR=$(ls -dt logs/all_backbones_* | head -1)
+cat "${RUN_DIR}/backbone_pids.txt"
+tail -f "${RUN_DIR}/base_earlystop_wlr.log"
+watch -n 2 nvidia-smi
+```
+
+With full-data mode, every process materializes its own CPU copy of the
+processed dataset. Check host memory before using the concurrent launcher; use
+`run_DADF.sh` separately if the machine cannot hold seven copies.
 
 Override the backbone MLP dimensions with a space-separated list:
 
@@ -221,6 +244,7 @@ dataloader/        Dataset loaders
 dataset/           Public-dataset preprocessing
 tests/             Public method-contract tests
 run_DADF.sh        Generic backbone and DADF experiment launcher
+run_all_backbone.sh Concurrent backbone-only launcher
 ```
 
 ## Citation

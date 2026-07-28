@@ -125,6 +125,46 @@ BASE_MODEL=cread MODE=dadf DATASET=wechat21 DEVICE=cuda:0 bash run_DADF.sh
 BASE_MODEL=wlr MODE=base DATASET=kuairec DEVICE=cuda:0 bash run_DADF.sh
 ```
 
+同时在后台启动全部七个 backbone：
+
+```bash
+bash run_all_backbone.sh
+```
+
+该入口固定使用 `MODE=base`，不会构建或训练 DADF；默认保持原始
+`256 128 64` MLP 宽度，并在两张 GPU 上轮询分配。默认情况下，
+`vr/tpm/cread/egmn` 使用 `cuda:0`，`wlr/d2q/d2co` 使用 `cuda:1`。
+七个任务会立即并发启动，而不是排队执行。每个任务最多训练 100 个
+epoch；若验证集 XAUC 连续 6 个 epoch 未提升，则提前停止并恢复最佳
+checkpoint。
+
+日志和 PID 分别保存在：
+
+```text
+logs/all_backbones_<时间戳>/base_earlystop_<backbone>.log
+logs/all_backbones_<时间戳>/backbone_pids.txt
+```
+
+无需修改脚本即可覆盖 GPU、最大训练轮数和 patience：
+
+```bash
+DEVICES="cuda:0 cuda:1" BASE_EPOCH=100 PATIENCE=6 \
+  bash run_all_backbone.sh
+```
+
+查看最新一次并发实验：
+
+```bash
+RUN_DIR=$(ls -dt logs/all_backbones_* | head -1)
+cat "${RUN_DIR}/backbone_pids.txt"
+tail -f "${RUN_DIR}/base_earlystop_wlr.log"
+watch -n 2 nvidia-smi
+```
+
+在全量数据模式下，每个进程都会在 CPU 内存中持有一份处理后的数据。
+使用并发入口前应确认主机内存充足；内存不足时应改用 `run_DADF.sh`
+逐个运行。
+
 通过空格分隔的维度列表扩展 backbone MLP：
 
 ```bash
@@ -200,6 +240,7 @@ dataloader/        数据加载器
 dataset/           公共数据集预处理
 tests/             论文方法契约测试
 run_DADF.sh        通用 backbone 与 DADF 实验入口
+run_all_backbone.sh 七个纯 backbone 并发训练入口
 ```
 
 ## 引用
