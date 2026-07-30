@@ -152,6 +152,17 @@ DEVICES="cuda:0 cuda:1" BASE_EPOCH=100 PATIENCE=6 \
   bash run_all_backbone.sh
 ```
 
+同时启动七个参数量匹配的纯 backbone 消融实验：
+
+```bash
+CAPACITY_MATCHED=1 bash run_all_backbone.sh
+```
+
+该模式仍然完全跳过 DADF，但会为每个模型自动选择匹配
+Backbone+DADF dense 参数量的 MLP：VR、WLR、D2CO、EGMN 使用
+`354 128 64`，TPM、D2Q、CREAD 使用 `342 128 64`。日志独立保存在
+`logs/all_backbones_capacity_matched_<时间戳>/capacity_matched_<backbone>.log`。
+
 查看最新一次并发实验：
 
 ```bash

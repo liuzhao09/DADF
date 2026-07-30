@@ -154,6 +154,17 @@ DEVICES="cuda:0 cuda:1" BASE_EPOCH=100 PATIENCE=6 \
   bash run_all_backbone.sh
 ```
 
+Run the dense-capacity control for all seven backbones with:
+
+```bash
+CAPACITY_MATCHED=1 bash run_all_backbone.sh
+```
+
+This remains a backbone-only experiment but selects the matched MLP dimensions
+for each model automatically: `354 128 64` for VR, WLR, D2CO, and EGMN, and
+`342 128 64` for TPM, D2Q, and CREAD. Its logs are isolated under
+`logs/all_backbones_capacity_matched_<timestamp>/capacity_matched_<backbone>.log`.
+
 Monitor a launch with:
 
 ```bash
