@@ -72,8 +72,7 @@ backbone-only command.
 
 ## Default Configuration
 
-The table describes the effective full-data defaults of `run_DADF.sh` with
-`BACKBONE_AUTOTUNE=1`:
+The experiments use the following standard configuration:
 
 | Setting | KuaiRec | WeChat21 |
 |---|---:|---:|
@@ -82,12 +81,8 @@ The table describes the effective full-data defaults of `run_DADF.sh` with
 | Batch size | 2048 | 2048 |
 | Correction hidden size | 64 | 64 |
 | First-stage warm-up epochs | 3 | 3 |
-| Maximum correction epochs | WLR: 25; EGMN: 12; others: 30 | 30 |
-| Early-stopping patience | EGMN: 8; others: 6 | 6 |
-
-Some D2Q and EGMN settings are also adjusted by the per-backbone autotuning
-rules. Each training log prints the effective argument values used by that run.
-Set `BACKBONE_AUTOTUNE=0` to disable these launcher-level overrides.
+| Maximum correction epochs | 30 | 30 |
+| Early-stopping patience | 6 | 6 |
 
 Common defaults:
 
