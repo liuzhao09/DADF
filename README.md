@@ -216,6 +216,58 @@ The exact count printed by a run is authoritative because preprocessing may
 drop constant fields. Use the same split, seed, optimization budget, and
 validation protocol when comparing a capacity-matched backbone with DADF.
 
+#### Why control for backbone capacity?
+
+DADF introduces additional dense parameters through its correction module. A
+natural question is whether its gains come from the proposed debiasing design
+or merely from increased model capacity. We therefore construct a strict
+capacity control that removes DADF entirely and enlarges only the backbone MLP
+until its dense parameter count matches Backbone+DADF within 0.1%. The control
+uses no additional features, labels, or training examples.
+
+For each random seed, run the default-capacity and capacity-matched backbones
+with the same data split, optimization budget, and validation-XAUC checkpoint
+selection protocol:
+
+```bash
+# Original-capacity backbones
+SEED=42 CAPACITY_MATCHED=0 DEVICES="cuda:0 cuda:1" \
+  BASE_EPOCH=100 PATIENCE=6 bash run_all_backbone.sh
+
+# Capacity-matched backbones; run after the jobs above have finished
+SEED=42 CAPACITY_MATCHED=1 DEVICES="cuda:0 cuda:1" \
+  BASE_EPOCH=100 PATIENCE=6 bash run_all_backbone.sh
+```
+
+Replace `42` with each seed used in the experiment and repeat this paired
+protocol for all 10 random seeds. Because
+`run_all_backbone.sh` starts seven background jobs and returns immediately,
+wait for each launch to finish before starting the next seed.
+
+#### Ten-seed capacity-control results
+
+The table reports test XAUC averaged over 10 random seeds after restoring the
+checkpoint with the best validation XAUC for each run. `Delta XAUC` is
+capacity-matched minus original, so a positive value favors the larger
+backbone.
+
+| Backbone | Original dense | Matched dense | Parameter increase | Original XAUC | Matched XAUC | Delta XAUC |
+|---|---:|---:|---:|---:|---:|---:|
+| VR | 185,730 | 253,448 | +36.46% | **0.5612** | 0.5583 | -0.0029 |
+| WLR | 185,730 | 253,448 | +36.46% | **0.5947** | 0.5807 | -0.0140 |
+| TPM | 187,936 | 247,448 | +31.67% | 0.5517 | **0.5534** | +0.0017 |
+| D2Q | 185,986 | 245,498 | +32.00% | **0.6317** | 0.6316 | -0.0001 |
+| CREAD | 294,771 | 354,283 | +20.19% | 0.5954 | **0.6013** | +0.0059 |
+| D2CO | 185,730 | 253,448 | +36.46% | **0.5708** | 0.5706 | -0.0002 |
+| EGMN | 188,001 | 255,817 | +36.07% | 0.6263 | **0.6268** | +0.0005 |
+| **Average** | **201,983** | **266,199** | **+31.79%** | **0.5903** | **0.5890** | **-0.0013** |
+
+Increasing dense capacity by 31.79% on average does not yield consistent
+improvements: mean XAUC decreases by 0.0013, and four of the seven backbones do
+not improve. This control indicates that parameter scaling alone cannot explain
+the consistent gains obtained by DADF; the gains depend on how the additional
+capacity is structured for distribution-aware debiasing.
+
 ## Evaluation and Reported Results
 
 The runner reports:
