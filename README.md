@@ -222,8 +222,17 @@ DADF introduces additional dense parameters through its correction module. A
 natural question is whether its gains come from the proposed debiasing design
 or merely from increased model capacity. We therefore construct a strict
 capacity control that removes DADF entirely and enlarges only the backbone MLP
-until its dense parameter count matches Backbone+DADF within 0.1%. The control
-uses no additional features, labels, or training examples.
+until its dense parameter count matches Backbone+DADF within 0.1%.
+
+Crucially, the original backbone, the capacity-matched backbone, and DADF use
+exactly the same preprocessed examples, train/validation/test split, and raw
+input feature fields. DADF introduces no external dataset or additional
+inference-time feature field; its auxiliary targets are deterministically
+constructed from labels already present in the same training records. The
+capacity control therefore holds both information access and model size nearly
+constant: it uses the same data and features as DADF while matching its dense
+parameter count within 0.1%. The remaining distinction is how DADF structures
+and supervises that capacity for distribution-aware debiasing.
 
 For each random seed, run the default-capacity and capacity-matched backbones
 with the same data split, optimization budget, and validation-XAUC checkpoint
@@ -264,9 +273,12 @@ backbone.
 
 Increasing dense capacity by 31.79% on average does not yield consistent
 improvements: mean XAUC decreases by 0.0013, and four of the seven backbones do
-not improve. This control indicates that parameter scaling alone cannot explain
-the consistent gains obtained by DADF; the gains depend on how the additional
-capacity is structured for distribution-aware debiasing.
+not improve. The capacity-matched backbone uses the same training records and
+raw features as DADF and has nearly the same dense parameter count, yet adding
+this capacity to the backbone alone does not reproduce DADF's gains. Therefore,
+the gains cannot be attributed to extra data, extra features, or parameter count
+alone; they depend on how DADF structures and trains that capacity for
+distribution-aware debiasing.
 
 ## Evaluation and Reported Results
 
