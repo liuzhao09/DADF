@@ -43,6 +43,42 @@ This repository provides the public-benchmark implementation used to study the D
 
 The repository focuses on the reproducible research path. Dataset files and deployment-specific infrastructure are not distributed here. The public auxiliary heads are trained from labels available in the two public datasets and follow the same auxiliary representation design.
 
+## Experimental Controls at a Glance
+
+The main comparisons are designed to isolate the contribution of DADF rather
+than weak backbone training, additional information, or parameter count:
+
+1. **Strong backbone reproduction.** All seven first-stage implementations are
+   individually tuned and validated before DADF is attached; DADF is not
+   evaluated against intentionally under-trained backbones. As an external
+   sanity check, our reproduced EGMN achieves lower MAE and higher XAUC than
+   the values reported in the EGMN paper on both public datasets:
+   `4.081/0.6245` versus `4.204/0.6093` MAE/XAUC on KuaiRec, and
+   `18.330/0.6896` versus `18.880/0.6692` on WeChat21. Because the
+   preprocessing and splits may differ across repositories, this comparison
+   demonstrates reproduction strength rather than a controlled method gain.
+   The complete values are reported in the [EGMN reference](#egmn-reference).
+2. **Capacity- and information-matched control.** The original backbone, the
+   enlarged backbone, and Backbone+DADF use the same preprocessed records,
+   train/validation/test split, and raw input feature fields. DADF uses no
+   external dataset or additional inference-time feature; its auxiliary
+   targets are deterministic functions of labels already present in the same
+   training records. Over 10 random seeds, enlarging the backbone to within
+   `0.1%` of Backbone+DADF's dense parameter count increases dense capacity by
+   `31.79%` on average but decreases mean test XAUC by `0.0013`, with no
+   improvement on four of seven backbones. Thus DADF's gains are not explained
+   by additional data, features, or parameter count alone. Parameter counts,
+   reproduction commands, and per-backbone results are provided in the
+   [dense-capacity control](#dense-capacity-control).
+3. **Strict paired correction comparison.** For every DADF-versus-TranSUN
+   comparison, both correction methods start from the identical first-stage
+   parameters obtained after warm-up. The first-stage parameters remain frozen,
+   and only the method-specific second-stage correction parameters are updated.
+   The public DADF runner enforces this freeze by default. With respect to
+   backbone initialization, reusing this same in-memory post-warm-up state is
+   equivalent to loading the same serialized backbone checkpoint;
+   serialization itself does not change the comparison.
+
 ## Experimental Setup
 
 The experiments use a consistent first-stage model and correction setup:
