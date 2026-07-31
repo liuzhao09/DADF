@@ -6,7 +6,9 @@
 
 ## 方法概览
 
-DADF 是一个轻量级的二阶段观看时长纠偏框架。它冻结已经训练完成的第一阶段预测器，仅学习其中可由推理时信号预测的条件残差。修正后的输出保持原有标量接口：
+DADF 是一个轻量级的二阶段观看时长纠偏框架。公开训练入口首先 warm up
+第一阶段预测器，在进入纠偏阶段时将其冻结，再学习可由推理时信号预测的条件
+残差。修正后的输出保持原有标量接口：
 
 ```text
 修正后观看时长 = 第一阶段观看时长预测 * 纠偏因子
@@ -44,12 +46,14 @@ DADF 是一个轻量级的二阶段观看时长纠偏框架。它冻结已经训
 - 所有 backbone 使用相同的特征预处理和 80%/10%/10% 数据划分；
 - 稀疏特征 embedding 维度统一为 16；
 - 适用的 backbone MLP 隐藏层宽度统一为 256、128 和 64；
-- 每个第一阶段 backbone 均先在验证集上选择 checkpoint，再进行纠偏训练；
-- 同一 backbone 下的 Base 与 DADF 从完全相同的第一阶段 checkpoint 出发；
-- DADF 训练期间冻结第一阶段 checkpoint；
+- `MODE=dadf` 在同一次运行的 warm-up 阶段训练第一阶段预测器；
+- 进入纠偏阶段后冻结第一阶段预测器；
+- 根据验证集 XAUC 选择最佳纠偏模型；
+- `MODE=base` 是独立的纯 backbone 运行，不向 `MODE=dadf` 提供序列化 checkpoint；
 - 配对实验使用相同的数据划分和随机种子。
 
-这些设置保证同一 backbone 组内不同方法使用一致的模型容量和数据处理方式。
+这一点对复现很重要：公开 DADF 命令是自包含的，不会加载另一条纯 backbone
+命令训练得到的 checkpoint。
 
 ## 支持的第一阶段预测器
 
@@ -65,21 +69,28 @@ DADF 是一个轻量级的二阶段观看时长纠偏框架。它冻结已经训
 
 ## 默认配置
 
+下表对应 `run_DADF.sh` 在全量数据和 `BACKBONE_AUTOTUNE=1` 下的实际默认值：
+
 | 配置 | KuaiRec | WeChat21 |
 |---|---:|---:|
 | 时长区间数量 | 4 | 3 |
 | 区间构造方式 | 等频 | 等频 |
 | Batch size | 2048 | 2048 |
 | 纠偏隐层维度 | 64 | 64 |
-| 最大纠偏训练轮数 | 25 | 30 |
-| 早停 patience | 6 | 6 |
+| 第一阶段 warm-up 轮数 | 3 | 3 |
+| 最大纠偏训练轮数 | WLR：25；EGMN：12；其他：30 | 30 |
+| 早停 patience | EGMN：8；其他：6 | 6 |
+
+D2Q 和 EGMN 的部分配置还会经过按-backbone 自动调参规则覆盖。每次训练日志
+都会打印该次运行实际生效的参数；设置 `BACKBONE_AUTOTUNE=0` 可关闭这些
+launcher 层覆盖。
 
 两套数据共同使用以下默认设置：
 
 - hard duration routing；
 - 每个区间独立的可学习 Box-Cox 参数；
 - 各区间均匀加权；
-- 冻结第一阶段预测器；
+- warm-up 后冻结第一阶段预测器；
 - 七个观看时长辅助目标；
 - 基于验证集 XAUC 早停；
 - 损失权重 `(变换空间, 原始空间, 正则, 辅助任务) = (1.0, 0.8, 0.05, 0.10)`。
@@ -105,6 +116,9 @@ pip install -r requirements.txt
 按照 [`dataset/README.md`](dataset/README.md) 放置并预处理原始文件。原始数据和处理后的数据文件均不纳入版本控制。
 
 ## 运行 DADF
+
+以下 launcher 命令均会传入 `--full-data`，使用处理后的全量数据文件
+`<dataset>_data_full.pkl`。
 
 在 KuaiRec 上运行标准 WLR+DADF 配置：
 
@@ -168,7 +182,11 @@ Backbone+DADF dense 参数量的 MLP：VR、WLR、D2CO、EGMN 使用
 ```bash
 RUN_DIR=$(ls -dt logs/all_backbones_* | head -1)
 cat "${RUN_DIR}/backbone_pids.txt"
-tail -f "${RUN_DIR}/base_earlystop_wlr.log"
+
+# 外层 launcher 日志会暂时停在 [launch]；实际训练进度请查看内层日志。
+TRAIN_LOG=$(ls -t logs/base_wlr_*/base_wlr_kuairec.log | head -1)
+tail -f "${TRAIN_LOG}"
+
 watch -n 2 nvidia-smi
 ```
 
@@ -209,8 +227,10 @@ embedding table。在 KuaiRec 默认特征和 DADF 配置下，仅扩展 backbon
 | D2CO | 185,730 | 253,649 | `354 128 64` | 253,448 |
 | EGMN | 188,001 | 255,920 | `354 128 64` | 255,817 |
 
-若预处理删除了常量特征，应以实际运行日志打印的参数量为准。容量对照实验应
-使用相同的数据划分、随机种子、训练预算和验证集选择协议。
+若预处理删除了常量特征，应以实际运行日志打印的参数量为准。默认容量与参数量
+匹配 backbone 的对照应使用相同的数据划分、随机种子、纯 backbone 训练预算
+和验证集选择协议；再将匹配版本与 Backbone+DADF 的参数量进行对照，从而将
+模型容量因素与 DADF 结构设计分离。
 
 #### 为什么需要控制 backbone 参数量？
 

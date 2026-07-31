@@ -6,7 +6,11 @@ Reference implementation for **DADF: A Distribution-Aware Debiasing Framework fo
 
 ## Overview
 
-DADF is a lightweight second-stage correction framework for watch-time regression. It keeps a trained first-stage predictor frozen and estimates the inference-time-predictable part of its conditional residual. The corrected prediction preserves the original scalar interface:
+DADF is a lightweight second-stage correction framework for watch-time
+regression. The public training entry point first warms up the first-stage
+predictor, freezes it when correction training begins, and then estimates the
+inference-time-predictable part of its conditional residual. The corrected
+prediction preserves the original scalar interface:
 
 ```text
 corrected_watch_time = base_watch_time * correction_factor
@@ -44,12 +48,15 @@ The experiments use a consistent first-stage model and correction setup:
 - all backbones use the same feature preprocessing and the same 80%/10%/10% data split;
 - sparse feature embeddings use 16 dimensions;
 - backbone MLP widths are 256, 128, and 64 where applicable;
-- each first-stage backbone is selected on the validation split before correction training;
-- Base and DADF within a backbone group start from the same first-stage checkpoint;
-- the first-stage checkpoint is frozen during DADF correction training;
+- `MODE=dadf` trains the first-stage predictor during an in-run warm-up phase;
+- the first-stage predictor is frozen when the correction phase begins;
+- the best corrected model is selected by validation XAUC;
+- `MODE=base` is an independent backbone-only run and does not provide a serialized checkpoint to `MODE=dadf`;
 - matched runs use the same split and random seed.
 
-These settings keep model capacity and data treatment consistent across methods within each backbone group.
+This distinction is important for reproduction: the public DADF command is
+self-contained and does not load the checkpoint produced by a separate
+backbone-only command.
 
 ## Supported First-Stage Predictors
 
@@ -65,21 +72,29 @@ These settings keep model capacity and data treatment consistent across methods 
 
 ## Default Configuration
 
+The table describes the effective full-data defaults of `run_DADF.sh` with
+`BACKBONE_AUTOTUNE=1`:
+
 | Setting | KuaiRec | WeChat21 |
 |---|---:|---:|
 | Duration regimes | 4 | 3 |
 | Regime construction | Equal-frequency | Equal-frequency |
 | Batch size | 2048 | 2048 |
 | Correction hidden size | 64 | 64 |
-| Maximum correction epochs | 25 | 30 |
-| Early-stopping patience | 6 | 6 |
+| First-stage warm-up epochs | 3 | 3 |
+| Maximum correction epochs | WLR: 25; EGMN: 12; others: 30 | 30 |
+| Early-stopping patience | EGMN: 8; others: 6 | 6 |
+
+Some D2Q and EGMN settings are also adjusted by the per-backbone autotuning
+rules. Each training log prints the effective argument values used by that run.
+Set `BACKBONE_AUTOTUNE=0` to disable these launcher-level overrides.
 
 Common defaults:
 
 - hard duration routing;
 - group-level learnable Box-Cox parameters;
 - uniform regime weighting;
-- frozen first-stage predictor;
+- first-stage predictor frozen after warm-up;
 - seven auxiliary watch-time targets;
 - validation XAUC for early stopping;
 - loss weights `(transformed, absolute, regularization, auxiliary) = (1.0, 0.8, 0.05, 0.10)`.
@@ -107,6 +122,9 @@ Download the datasets from their official sources:
 Follow [`dataset/README.md`](dataset/README.md) to place and preprocess the raw files. Raw and processed dataset artifacts are excluded from version control.
 
 ## Running DADF
+
+The launcher commands below use the processed full-data artifact
+(`<dataset>_data_full.pkl`) by passing `--full-data`.
 
 Run the standard WLR+DADF configuration on KuaiRec:
 
@@ -170,7 +188,11 @@ Monitor a launch with:
 ```bash
 RUN_DIR=$(ls -dt logs/all_backbones_* | head -1)
 cat "${RUN_DIR}/backbone_pids.txt"
-tail -f "${RUN_DIR}/base_earlystop_wlr.log"
+
+# The outer launcher log pauses at [launch]; follow the actual training log.
+TRAIN_LOG=$(ls -t logs/base_wlr_*/base_wlr_kuairec.log | head -1)
+tail -f "${TRAIN_LOG}"
+
 watch -n 2 nvidia-smi
 ```
 
@@ -213,8 +235,10 @@ match the dense capacity of the corresponding backbone+DADF model within 0.1%:
 | EGMN | 188,001 | 255,920 | `354 128 64` | 255,817 |
 
 The exact count printed by a run is authoritative because preprocessing may
-drop constant fields. Use the same split, seed, optimization budget, and
-validation protocol when comparing a capacity-matched backbone with DADF.
+drop constant fields. Use the same split, seed, backbone-only optimization
+budget, and validation protocol when comparing the original-capacity and
+capacity-matched backbones. The matched count is then compared with the
+Backbone+DADF count to isolate model capacity from the DADF design.
 
 #### Why control for backbone capacity?
 
