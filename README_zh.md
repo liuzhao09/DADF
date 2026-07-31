@@ -238,9 +238,8 @@ SEED=42 CAPACITY_MATCHED=1 DEVICES="cuda:0 cuda:1" \
   BASE_EPOCH=100 PATIENCE=6 bash run_all_backbone.sh
 ```
 
-将 `42` 替换为实验采用的各个 seed，并对 10 个随机种子重复上述成对实验。
-由于 `run_all_backbone.sh` 会启动七个后台任务后立即返回，因此必须等待当前
-一组任务全部结束，再启动下一个 seed，避免同时创建 70 个训练进程。
+我们使用 10 个随机种子重复了上述成对实验。由于 `run_all_backbone.sh`
+会启动七个后台任务后立即返回，因此每组任务全部结束后才启动下一个 seed。
 
 #### 10-seed 参数量对照结果
 

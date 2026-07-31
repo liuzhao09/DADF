@@ -248,10 +248,9 @@ SEED=42 CAPACITY_MATCHED=1 DEVICES="cuda:0 cuda:1" \
   BASE_EPOCH=100 PATIENCE=6 bash run_all_backbone.sh
 ```
 
-Replace `42` with each seed used in the experiment and repeat this paired
-protocol for all 10 random seeds. Because
+We repeated the paired protocol above using 10 random seeds. Because
 `run_all_backbone.sh` starts seven background jobs and returns immediately,
-wait for each launch to finish before starting the next seed.
+each launch was allowed to finish before the next seed was started.
 
 #### Ten-seed capacity-control results
 
