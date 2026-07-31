@@ -9,14 +9,16 @@ Reference implementation for **DADF: A Distribution-Aware Debiasing Framework fo
 DADF is a lightweight second-stage correction framework for watch-time
 regression. The public training entry point first warms up the first-stage
 predictor, freezes it when correction training begins, and then estimates the
-inference-time-predictable part of its conditional residual. The corrected
-prediction preserves the original scalar interface:
+inference-time-predictable part of its conditional multiplicative bias. The
+corrected prediction preserves the original scalar interface:
 
 ```text
 corrected_watch_time = base_watch_time * correction_factor
 ```
 
-Here, debiasing means correcting predictable conditional residuals rather than globally recalibrating the first-stage model. Video duration indexes heterogeneous regimes; it is not treated as the sole cause of prediction error.
+Here, debiasing means correcting predictable conditional bias rather than
+globally recalibrating the first-stage model. Video duration indexes
+heterogeneous regimes; it is not treated as the sole cause of prediction error.
 
 ## Method
 
@@ -51,12 +53,14 @@ The experiments use a consistent first-stage model and correction setup:
 - `MODE=dadf` trains the first-stage predictor during an in-run warm-up phase;
 - the first-stage predictor is frozen when the correction phase begins;
 - the best corrected model is selected by validation XAUC;
-- `MODE=base` is an independent backbone-only run and does not provide a serialized checkpoint to `MODE=dadf`;
-- matched runs use the same split and random seed.
+- in each paired comparison, DADF and the adapted TranSUN baseline start from
+  the same first-stage parameters obtained after warm-up, which remain frozen
+  during correction training;
+- paired runs use the same data split and random seed, and update only their newly introduced correction parameters after warm-up.
 
-This distinction is important for reproduction: the public DADF command is
-self-contained and does not load the checkpoint produced by a separate
-backbone-only command.
+The standalone `MODE=base` command is provided for backbone-only reproduction
+and capacity controls; it is not part of the paired correction-method protocol
+described above.
 
 ## Supported First-Stage Predictors
 
@@ -233,7 +237,7 @@ The exact count printed by a run is authoritative because preprocessing may
 drop constant fields. Use the same split, seed, backbone-only optimization
 budget, and validation protocol when comparing the original-capacity and
 capacity-matched backbones. The matched count is then compared with the
-Backbone+DADF count to isolate model capacity from the DADF design.
+Backbone+DADF count to distinguish model-capacity effects from the DADF design.
 
 #### Why control for backbone capacity?
 
@@ -254,7 +258,7 @@ parameter count within 0.1%. The remaining distinction is how DADF structures
 and supervises that capacity for distribution-aware debiasing.
 
 For each random seed, run the default-capacity and capacity-matched backbones
-with the same data split, optimization budget, and validation-XAUC checkpoint
+with the same data split, optimization budget, and validation-XAUC model
 selection protocol:
 
 ```bash
@@ -274,7 +278,7 @@ each launch was allowed to finish before the next seed was started.
 #### Ten-seed capacity-control results
 
 The table reports test XAUC averaged over 10 random seeds after restoring the
-checkpoint with the best validation XAUC for each run. `Delta XAUC` is
+model state with the best validation XAUC for each run. `Delta XAUC` is
 capacity-matched minus original, so a positive value favors the larger
 backbone.
 
@@ -293,10 +297,10 @@ Increasing dense capacity by 31.79% on average does not yield consistent
 improvements: mean XAUC decreases by 0.0013, and four of the seven backbones do
 not improve. The capacity-matched backbone uses the same training records and
 raw features as DADF and has nearly the same dense parameter count, yet adding
-this capacity to the backbone alone does not reproduce DADF's gains. Therefore,
-the gains cannot be attributed to extra data, extra features, or parameter count
-alone; they depend on how DADF structures and trains that capacity for
-distribution-aware debiasing.
+this capacity to the backbone alone does not reproduce DADF's gains. These
+results indicate that the gains are not explained by extra data, extra features,
+or parameter count alone; instead, they depend on how DADF structures and
+trains that capacity for distribution-aware debiasing.
 
 ## Evaluation and Reported Results
 
